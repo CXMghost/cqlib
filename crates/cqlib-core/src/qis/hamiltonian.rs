@@ -17,6 +17,7 @@
 //! with complex coefficients. It is primarily used for defining system energies,
 //! observables for expectation value calculations, and operators for time evolution.
 
+use crate::qis::error::validate_coefficient;
 use crate::qis::pauli::PauliString;
 use crate::qis::{Phase, QisError};
 use ndarray::Array2;
@@ -51,6 +52,48 @@ impl fmt::Display for Hamiltonian {
 }
 
 impl Hamiltonian {
+    /// Returns a validated Pauli sum with phases absorbed and exact zeros removed.
+    /// Retains the declared qubit count, including for zero and scalar operators.
+    pub fn normalized(&self) -> Result<Self, QisError> {
+        for (pauli, coefficient) in &self.terms {
+            if pauli.num_qubits != self.num_qubits {
+                return Err(QisError::QubitMismatch {
+                    expected: self.num_qubits,
+                    actual: pauli.num_qubits,
+                });
+            }
+            for actual in [pauli.x.len(), pauli.z.len()] {
+                if actual != self.num_qubits {
+                    return Err(QisError::DimensionMismatch {
+                        expected: self.num_qubits,
+                        actual,
+                    });
+                }
+            }
+            validate_coefficient(*coefficient)?;
+        }
+        let mut normalized = self.clone();
+        normalized.simplify_with_tolerance(0.0);
+        for (_, coefficient) in &normalized.terms {
+            validate_coefficient(*coefficient)?;
+        }
+        Ok(normalized)
+    }
+
+    /// Shared contract for real-valued observables and Hamiltonian evolution.
+    /// Hermiticity is checked after merging, without pruning small coefficients.
+    pub fn normalized_hermitian(&self) -> Result<Self, QisError> {
+        let normalized = self.normalized()?;
+        if normalized
+            .terms
+            .iter()
+            .any(|(_, coefficient)| coefficient.im.abs() > 1e-10)
+        {
+            return Err(QisError::NotHermitian);
+        }
+        Ok(normalized)
+    }
+
     /// Creates a new empty Hamiltonian.
     ///
     /// The resulting Hamiltonian represents the zero operator for the given
