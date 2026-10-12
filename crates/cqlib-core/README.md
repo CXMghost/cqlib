@@ -77,7 +77,8 @@ assert!(bound.parameters().is_empty());
 - **Simulation** — Statevector, density-matrix, noisy density-matrix, and
   stabilizer simulation
 - **Quantum information** — Pauli operators, Hamiltonians, observables,
-  evolution, metrics, and entropy functions
+  evolution, fermionic algebra, excitation generators, Jordan–Wigner mapping,
+  metrics, and entropy functions
 - **Error mitigation** — Zero-noise extrapolation and virtual distillation
 - **Interchange formats** — OpenQASM 2, OpenQASM 3, and QCIS
 - **Visualization** — Text and SVG circuit rendering plus state and result plots

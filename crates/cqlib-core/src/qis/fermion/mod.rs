@@ -37,19 +37,21 @@
 //!
 //! # Parameterized excitation evolution
 //! ```
-//! use cqlib_core::qis::{FermionicLadder::{Create, Annihilate}, FermionicOp,
+//! use cqlib_core::qis::{FermionicOp,
 //!     FermionToQubitMapper, JordanWignerMapper};
 //! use cqlib_core::circuit::ansatz::{Ansatz, PauliEvolutionAnsatz};
-//! use num_complex::Complex64;
-//! let t = FermionicOp::from_term(4,
-//!     [Create(2), Create(3), Annihilate(1), Annihilate(0)], 1.0.into())?;
-//! let h = (&t - t.adjoint())?.scaled(Complex64::new(0.0, 1.0))?;
+//! let h = FermionicOp::excitation_generator(4, &[0, 1], &[2, 3])?;
 //! // e^(-i H theta) = e^(theta (T - T†)).
 //! let mapped = JordanWignerMapper::new().map_operator(&h)?;
 //! let circuit = PauliEvolutionAnsatz::new(mapped)?.build_circuit("excitation")?;
 //! assert_eq!(circuit.num_qubits(), 4);
 //! # Ok::<(), cqlib_core::qis::QisError>(())
 //! ```
+//!
+//! Each excitation can have an independent parameter: build one evolution
+//! block per generator with a distinct `with_time_param_name`, then append
+//! the blocks using [`crate::circuit::Circuit::compose`]. A single ansatz built
+//! from a sum of generators instead has one shared time parameter.
 //!
 //! # Occupation-state encoding
 //! ```
