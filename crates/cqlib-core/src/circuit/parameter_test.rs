@@ -11,6 +11,8 @@
 // that they have been altered from the originals.
 
 use super::Parameter;
+use crate::circuit::circuit_impl::Circuit;
+use crate::circuit::circuit_to_matrix::circuit_to_matrix;
 use std::collections::{HashMap, HashSet};
 use std::f64::consts::{E, PI};
 
@@ -1134,6 +1136,111 @@ fn test_canonicalized_folds_constant_expression() {
 
     assert!(canonical.get_symbols().is_empty());
     assert_eq!(canonical.evaluate(&None).unwrap(), 0.0);
+}
+
+#[test]
+fn affine_cancellation_preserves_small_constants_without_false_symbols() {
+    let t = Parameter::symbol("t");
+    let u = Parameter::symbol("u");
+    let q: Parameter = t * 1e-16 + u * 2e-16;
+    for constant in [3e-16, -3e-16, f64::from_bits(1), 0.0] {
+        let p = q.clone() + constant;
+        let result = (p - &q).canonicalized().unwrap();
+        assert!(result.get_symbols().is_empty(), "{constant:?}: {result}");
+        assert_eq!(result.evaluate(&None).unwrap(), constant);
+        assert_eq!(
+            result.simplify().unwrap().evaluate(&None).unwrap(),
+            constant
+        );
+        assert_eq!(result.canonicalized().unwrap(), result);
+        assert_eq!(
+            (result.clone() + 0.0_f64).evaluate(&None).unwrap(),
+            constant
+        );
+        if constant.abs() == 3e-16 {
+            let angle: Parameter = result * 1e16;
+            let mut circuit = Circuit::new(1);
+            circuit.rz(circuit.qubits()[0], angle).unwrap();
+            assert!(circuit.symbols().is_empty());
+            let matrix = circuit_to_matrix(&circuit, None).unwrap();
+            let expected = num_complex::Complex64::from_polar(1.0, -constant * 1e16 / 2.0);
+            assert!((matrix[[0, 0]] - expected).norm() < 1e-14);
+        }
+    }
+}
+
+#[test]
+fn affine_scaling_preserves_near_unit_and_subnormal_weights() {
+    let t = Parameter::symbol("t");
+    let bindings = Some(HashMap::from([("t", 1.0)]));
+    for coefficient in [
+        f64::from_bits(1),
+        1e-16,
+        -1e-16,
+        0.375,
+        1.0 - f64::EPSILON,
+        1.0 + f64::EPSILON,
+    ] {
+        let weighted = t.clone() * coefficient;
+        let canonical = weighted.canonicalized().unwrap();
+        assert!(canonical.get_symbols().contains("t"));
+        assert_eq!(canonical.evaluate(&bindings).unwrap(), coefficient);
+        let rescaled: Parameter = canonical * 2.0;
+        assert_eq!(
+            rescaled
+                .canonicalized()
+                .unwrap()
+                .evaluate(&bindings)
+                .unwrap(),
+            coefficient * 2.0
+        );
+    }
+}
+
+#[test]
+fn affine_constant_division_preserves_small_coefficients() {
+    let t = Parameter::symbol("t");
+    let divisor = Parameter::from(1e16);
+    for (expr, expected) in [
+        (t.clone() / 1e16, 1.0),
+        (&t / &divisor, 1.0),
+        ((t.clone() * 1e-16) / 2.0, 0.5),
+        ((t.clone() / 1e16) / 2.0, 0.5),
+        (t.clone() / -1e16, -1.0),
+    ] {
+        let canonical = expr.canonicalized().unwrap();
+        assert!(canonical.get_symbols().contains("t"));
+        assert_eq!(
+            canonical
+                .evaluate(&Some(HashMap::from([("t", 1e16)])))
+                .unwrap(),
+            expected
+        );
+    }
+    let tiny = f64::from_bits(1);
+    assert_eq!((Parameter::from(tiny) / tiny).evaluate(&None).unwrap(), 1.0);
+    let quotient: Parameter = (t.clone() * tiny) / tiny;
+    assert_eq!(
+        quotient
+            .canonicalized()
+            .unwrap()
+            .evaluate(&Some(HashMap::from([("t", 1.0)])))
+            .unwrap(),
+        1.0
+    );
+    assert_eq!(
+        Parameter::from(tiny)
+            .canonicalized()
+            .unwrap()
+            .evaluate(&None)
+            .unwrap(),
+        tiny
+    );
+    let cancelled: Parameter = t.clone() / 1e16 - t / 1e16;
+    assert_eq!(
+        cancelled.canonicalized().unwrap().evaluate(&None).unwrap(),
+        0.0
+    );
 }
 
 #[test]
