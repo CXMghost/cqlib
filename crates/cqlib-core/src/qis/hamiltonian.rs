@@ -17,7 +17,6 @@
 //! with complex coefficients. It is primarily used for defining system energies,
 //! observables for expectation value calculations, and operators for time evolution.
 //!
-//! Modified: added checked sparse algebra and validated dense conversion.
 //! General algebra permits non-Hermitian operators. Real observables and unitary
 //! evolution validate Hermiticity at their consumption boundaries.
 

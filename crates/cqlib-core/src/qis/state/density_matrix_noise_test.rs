@@ -1459,3 +1459,122 @@ fn test_ccx_with_noise_model_does_not_panic() {
         "CCX should produce support on |111>, got {probs:?}"
     );
 }
+
+#[test]
+fn pauli_probability_boundary_preserves_simulation_trace() {
+    let noise = SingleQubitNoise::Pauli {
+        px: 0.3,
+        py: 0.6,
+        pz: 0.1,
+    };
+    let mut model = NoiseModel::new();
+    model
+        .add_single_qubit_error(StandardGate::X, Qubit::new(0), noise)
+        .unwrap();
+    let mut sim = DensityMatrixNoise::new(1, Some(model));
+    sim.apply_x(0).unwrap();
+    assert!((sim.probabilities()[0] - 0.9).abs() < 1e-12);
+    assert!((sim.probabilities().iter().sum::<f64>() - 1.0).abs() < 1e-12);
+}
+
+#[test]
+fn gate_noise_uses_original_labels_and_operand_order() {
+    for ids in [[0, 1], [5, 12], [12, 5]] {
+        let qs = ids.map(Qubit::new);
+        let mut circuit = Circuit::from_qubits(qs.to_vec()).unwrap();
+        circuit.x(qs[0]).unwrap();
+        let mut model = NoiseModel::new();
+        model
+            .add_single_qubit_error(StandardGate::X, qs[0], SingleQubitNoise::BitFlip(1.0))
+            .unwrap();
+        let mut sim = DensityMatrixNoise::from_circuit(&circuit, Some(model)).unwrap();
+        assert!((sim.probabilities()[0] - 1.0).abs() < 1e-12);
+        sim.apply_x(0).unwrap();
+        assert!((sim.probabilities()[0] - 1.0).abs() < 1e-12);
+        for reverse in [false, true] {
+            let mut circuit = Circuit::from_qubits(qs.to_vec()).unwrap();
+            let [control, target] = if reverse { [qs[1], qs[0]] } else { qs };
+            circuit.cx(control, target).unwrap();
+            let mut model = NoiseModel::new();
+            model
+                .add_two_qubit_error(
+                    StandardGate::CX,
+                    control,
+                    target,
+                    TwoQubitNoise::Independent {
+                        q0_noise: SingleQubitNoise::BitFlip(1.0),
+                        q1_noise: SingleQubitNoise::BitFlip(0.0),
+                    },
+                )
+                .unwrap();
+            let sim = DensityMatrixNoise::from_circuit(&circuit, Some(model)).unwrap();
+            let expected = if reverse { 2 } else { 1 };
+            assert!((sim.probabilities()[expected] - 1.0).abs() < 1e-12);
+        }
+    }
+}
+
+#[test]
+fn failed_noisy_circuit_preserves_label_binding() {
+    use crate::circuit::Parameter;
+    let q = Qubit::new(5);
+    let mut bad = Circuit::from_qubits(vec![q]).unwrap();
+    bad.x(q).unwrap();
+    bad.rz(q, Parameter::symbol("unbound")).unwrap();
+    let mut model = NoiseModel::new();
+    model
+        .add_single_qubit_error(StandardGate::X, q, SingleQubitNoise::BitFlip(1.0))
+        .unwrap();
+    let mut sim = DensityMatrixNoise::new(1, Some(model.clone()));
+    assert!(sim.apply_circuit(&bad).is_err());
+    // Completed gates used label 5, but the failed application did not bind it.
+    assert!((sim.probabilities()[0] - 1.0).abs() < 1e-12);
+    sim.apply_circuit(&Circuit::new(1)).unwrap();
+
+    let mut good = Circuit::from_qubits(vec![q]).unwrap();
+    good.x(q).unwrap();
+    let mut bound = DensityMatrixNoise::from_circuit(&good, Some(model)).unwrap();
+    assert!(bound.apply_circuit(&bad).is_err());
+    bound.apply_x(0).unwrap();
+    assert!((bound.probabilities()[0] - 1.0).abs() < 1e-12);
+    assert!(bound.apply_circuit(&Circuit::new(1)).is_err());
+}
+
+#[test]
+fn identity_noise_respects_labels_and_repetition() {
+    for ids in [[0, 1], [12, 5]] {
+        for p in [0.0, 0.25, 1.0] {
+            for count in [1, 2, 3] {
+                let qs = ids.map(Qubit::new);
+                let mut c = Circuit::from_qubits(qs.to_vec()).unwrap();
+                for _ in 0..count {
+                    c.i(qs[1]).unwrap();
+                }
+                let mut model = NoiseModel::new();
+                model
+                    .add_single_qubit_error(StandardGate::I, qs[1], SingleQubitNoise::BitFlip(p))
+                    .unwrap();
+                let sim = DensityMatrixNoise::from_circuit(&c, Some(model)).unwrap();
+                let flipped = (1.0 - (1.0 - 2.0 * p).powi(count)) / 2.0;
+                for (actual, expected) in
+                    sim.probabilities()
+                        .iter()
+                        .zip([1.0 - flipped, 0.0, flipped, 0.0])
+                {
+                    assert!((actual - expected).abs() < 1e-12);
+                }
+                assert_eq!(
+                    DensityMatrixNoise::from_circuit(&c, None)
+                        .unwrap()
+                        .probabilities(),
+                    vec![1.0, 0.0, 0.0, 0.0]
+                );
+            }
+        }
+    }
+    let mut sim = DensityMatrixNoise::new(1, None);
+    assert!(
+        sim.apply_standard_gate_noise(StandardGate::I, &[1], &[])
+            .is_err()
+    );
+}

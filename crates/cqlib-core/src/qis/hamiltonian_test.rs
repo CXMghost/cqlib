@@ -15,8 +15,6 @@ use crate::qis::{PauliString, Phase, QisError};
 use ndarray::{Array2, arr2};
 use num_complex::Complex64;
 
-// Modified: independent matrix oracles and sparse-algebra boundary coverage.
-
 /// Test-only Kronecker product, independent of production Pauli operations.
 fn matrix_tensor(a: &Array2<Complex64>, b: &Array2<Complex64>) -> Array2<Complex64> {
     Array2::from_shape_fn((a.nrows() * b.nrows(), a.ncols() * b.ncols()), |(r, c)| {
