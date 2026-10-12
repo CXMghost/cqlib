@@ -16,6 +16,42 @@ use ndarray::{Array2, arr2};
 use num_complex::Complex64;
 
 #[test]
+fn hermitian_normalization_projects_only_accepted_imaginary_residuals() {
+    let h = Hamiltonian::from_list(vec![
+        ("I".parse().unwrap(), Complex64::new(0.0, 1e-12)),
+        ("Z".parse().unwrap(), Complex64::new(1e-16, -1e-10)),
+    ])
+    .unwrap();
+    let normalized = h.normalized_hermitian().unwrap();
+    assert_eq!(normalized.num_qubits, 1);
+    assert_eq!(
+        normalized.terms,
+        vec![("Z".parse().unwrap(), Complex64::new(1e-16, 0.0))]
+    );
+    assert_eq!(normalized.normalized_hermitian().unwrap(), normalized);
+    // General complex normalization must not apply the real projection.
+    assert_eq!(h.normalized().unwrap().terms.len(), 2);
+
+    let mut invalid = h.clone();
+    invalid.terms[0].1.im = 1.01e-10;
+    assert!(matches!(
+        invalid.normalized_hermitian(),
+        Err(QisError::NotHermitian)
+    ));
+
+    // Validate the merged imaginary coefficient before removing zero real parts.
+    let merged_invalid = Hamiltonian::from_list(vec![
+        ("Z".parse().unwrap(), Complex64::new(0.0, 0.75e-10)),
+        ("Z".parse().unwrap(), Complex64::new(0.0, 0.75e-10)),
+    ])
+    .unwrap();
+    assert!(matches!(
+        merged_invalid.normalized_hermitian(),
+        Err(QisError::NotHermitian)
+    ));
+}
+
+#[test]
 fn empty_hamiltonian_to_matrix_is_zero() {
     assert_eq!(
         Hamiltonian::new(2).to_matrix().unwrap(),

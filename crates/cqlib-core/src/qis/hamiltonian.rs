@@ -81,9 +81,12 @@ impl Hamiltonian {
     }
 
     /// Shared contract for real-valued observables and Hamiltonian evolution.
-    /// Hermiticity is checked after merging, without pruning small coefficients.
+    /// After merging and absorbing Pauli phases, imaginary parts with magnitude
+    /// greater than `1e-10` are rejected. Accepted imaginary roundoff residuals
+    /// are projected to zero, and terms with exactly zero real part are removed.
+    /// Every nonzero real coefficient is retained, however small.
     pub fn normalized_hermitian(&self) -> Result<Self, QisError> {
-        let normalized = self.normalized()?;
+        let mut normalized = self.normalized()?;
         if normalized
             .terms
             .iter()
@@ -91,6 +94,12 @@ impl Hamiltonian {
         {
             return Err(QisError::NotHermitian);
         }
+        for (_, coefficient) in &mut normalized.terms {
+            coefficient.im = 0.0;
+        }
+        normalized
+            .terms
+            .retain(|(_, coefficient)| coefficient.re != 0.0);
         Ok(normalized)
     }
 

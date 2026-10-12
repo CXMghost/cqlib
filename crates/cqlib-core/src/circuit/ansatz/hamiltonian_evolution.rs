@@ -254,15 +254,16 @@ impl PauliEvolutionAnsatz {
     ///
     /// Validates and normalizes the Hamiltonian (merges duplicate terms, absorbs
     /// phases into coefficients and removes exact zeros). Small nonzero coefficients
-    /// are retained, matching the numeric Hamiltonian evolution APIs.
+    /// are retained, matching the numeric Hamiltonian evolution APIs. Imaginary
+    /// roundoff residuals of magnitude at most `1e-10` are projected to zero.
     ///
     /// The default strategy is [`EvolutionStrategy::Auto`] with `steps = 1`.
     ///
     /// # Errors
     ///
     /// Returns [`QisError::InvalidParameterValue`] if the Hamiltonian is empty after
-    /// simplification, or [`QisError::NotHermitian`] if any coefficient has a non-zero
-    /// imaginary part after simplification.
+    /// real projection, or [`QisError::NotHermitian`] if any merged coefficient
+    /// has an imaginary part of magnitude greater than `1e-10`.
     pub fn new(hamiltonian: Hamiltonian) -> Result<Self, QisError> {
         let h = hamiltonian.normalized_hermitian()?;
 

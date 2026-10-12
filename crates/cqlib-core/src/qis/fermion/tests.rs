@@ -12,7 +12,7 @@
 
 use super::*;
 use crate::circuit::ansatz::{Ansatz, BasisEncoding, EvolutionStrategy, PauliEvolutionAnsatz};
-use crate::circuit::circuit_to_matrix;
+use crate::circuit::circuit_to_matrix::circuit_to_matrix;
 use crate::qis::{
     DensityMatrix, Hamiltonian, Observable, PauliString, Phase, QisError, Statevector, TrotterMode,
 };
@@ -51,6 +51,275 @@ fn assert_matrix_close(left: &Array2<Complex64>, right: &Array2<Complex64>) {
     assert_eq!(left.dim(), right.dim());
     for (a, b) in left.iter().zip(right) {
         assert!((*a - *b).norm() < 1e-11, "{a} != {b}");
+    }
+}
+
+// Independent occupation transitions for T: remove sources in input order,
+// then insert targets in reverse order. This does not inspect FermionicOp words
+// or use its algebra, normal ordering or JW mapping.
+fn excitation_fock_matrix(n: usize, sources: &[usize], targets: &[usize]) -> Array2<Complex64> {
+    let dim = 1usize << n;
+    let mut transition = Array2::<Complex64>::zeros((dim, dim));
+    for initial in 0..dim {
+        let mut state = initial;
+        let mut sign = 1.0;
+        let mut allowed = true;
+        for (&mode, create) in sources
+            .iter()
+            .map(|p| (p, false))
+            .chain(targets.iter().rev().map(|p| (p, true)))
+        {
+            if (state & (1 << mode) != 0) == create {
+                allowed = false;
+                break;
+            }
+            if (state & ((1 << mode) - 1)).count_ones() % 2 != 0 {
+                sign = -sign;
+            }
+            state ^= 1 << mode;
+        }
+        if allowed {
+            transition[[state, initial]] = Complex64::new(sign, 0.0);
+        }
+    }
+    (&transition - &transition.t().mapv(|c| c.conj())).mapv(|c| Complex64::new(0.0, 1.0) * c)
+}
+
+#[test]
+fn excitation_generator_validates_all_index_constraints() {
+    for (sources, targets) in [
+        (vec![], vec![]),
+        (vec![], vec![1]),
+        (vec![0, 1], vec![2]),
+        (vec![0, 0], vec![2, 3]),
+        (vec![0, 1], vec![2, 2]),
+        (vec![0], vec![0]),
+        (vec![0, 1], vec![1, 2]),
+    ] {
+        assert!(matches!(
+            FermionicOp::excitation_generator(4, &sources, &targets),
+            Err(QisError::InvalidParameterValue(_))
+        ));
+    }
+    for (n, sources, targets, invalid) in [
+        (0, vec![0], vec![1], 0),
+        (4, vec![4], vec![1], 4),
+        (4, vec![0], vec![4], 4),
+        (4, vec![0], vec![usize::MAX], usize::MAX),
+    ] {
+        assert!(matches!(
+            FermionicOp::excitation_generator(n, &sources, &targets),
+            Err(QisError::ModeOutOfBounds { mode, num_modes })
+                if mode == invalid && num_modes == n
+        ));
+    }
+}
+
+#[test]
+fn excitation_generator_preserves_input_order_and_permutation_signs() {
+    let g = FermionicOp::excitation_generator(5, &[1, 0], &[4, 2]).unwrap();
+    let expected = FermionicOp::from_terms(
+        5,
+        [
+            (
+                vec![Create(4), Create(2), Annihilate(0), Annihilate(1)],
+                Complex64::new(0.0, 1.0),
+            ),
+            (
+                vec![Create(1), Create(0), Annihilate(2), Annihilate(4)],
+                Complex64::new(0.0, -1.0),
+            ),
+        ],
+    )
+    .unwrap();
+    assert_eq!(g, expected);
+    assert_eq!(g.num_modes(), 5);
+    assert_eq!(g.num_terms(), 2);
+    assert_eq!(g.adjoint(), g);
+    let ordered = g.normal_order().unwrap();
+    assert_eq!(
+        FermionicOp::excitation_generator(5, &[0, 1], &[4, 2])
+            .unwrap()
+            .normal_order()
+            .unwrap(),
+        -&ordered
+    );
+    assert_eq!(
+        FermionicOp::excitation_generator(5, &[1, 0], &[2, 4])
+            .unwrap()
+            .normal_order()
+            .unwrap(),
+        -&ordered
+    );
+    assert_eq!(
+        FermionicOp::excitation_generator(5, &[0, 1], &[2, 4])
+            .unwrap()
+            .normal_order()
+            .unwrap(),
+        ordered
+    );
+    assert_eq!(
+        FermionicOp::excitation_generator(5, &[4, 2], &[1, 0]).unwrap(),
+        -&g
+    );
+
+    let triple = FermionicOp::excitation_generator(6, &[2, 0, 1], &[4, 5, 3]).unwrap();
+    assert_matrix_close(
+        &fock_matrix(&triple),
+        &excitation_fock_matrix(6, &[2, 0, 1], &[4, 5, 3]),
+    );
+}
+
+#[test]
+fn excitation_generator_single_and_double_have_expected_fock_signs() {
+    let single = FermionicOp::excitation_generator(3, &[0], &[2]).unwrap();
+    let mut expected = Array2::<Complex64>::zeros((8, 8));
+    let i = Complex64::new(0.0, 1.0);
+    expected[[4, 1]] = i;
+    expected[[1, 4]] = -i;
+    // A spectator in mode 1 flips the single-excitation sign.
+    expected[[6, 3]] = -i;
+    expected[[3, 6]] = i;
+    assert_eq!(fock_matrix(&single), expected);
+
+    let double = FermionicOp::excitation_generator(4, &[0, 1], &[2, 3]).unwrap();
+    let mut expected = Array2::<Complex64>::zeros((16, 16));
+    expected[[12, 3]] = i;
+    expected[[3, 12]] = -i;
+    assert_eq!(fock_matrix(&double), expected);
+}
+
+#[test]
+fn excitation_generators_match_fock_action_and_conserve_particle_number() {
+    let mapper = JordanWignerMapper::new();
+    let check = |n, sources: &[usize], targets: &[usize]| {
+        let op = FermionicOp::excitation_generator(n, sources, targets).unwrap();
+        let expected = excitation_fock_matrix(n, sources, targets);
+        assert_eq!(fock_matrix(&op), expected);
+        assert_eq!(expected, expected.t().mapv(|c| c.conj()));
+        assert!(op.is_hermitian(0.0).unwrap());
+        assert_eq!(fock_matrix(&op.normal_order().unwrap()), expected);
+        assert_matrix_close(
+            &mapper.map_operator(&op).unwrap().to_matrix().unwrap(),
+            &expected,
+        );
+        for ((row, col), value) in expected.indexed_iter() {
+            if value.norm() != 0.0 {
+                assert_eq!(row.count_ones(), col.count_ones());
+            }
+        }
+        let number = FermionicOp::total_number(n);
+        assert!(
+            number
+                .try_mul(&op)
+                .unwrap()
+                .try_sub(&op.try_mul(&number).unwrap())
+                .unwrap()
+                .normal_order()
+                .unwrap()
+                .is_zero()
+        );
+    };
+    // Every ordered, disjoint single and double excitation for up to five modes.
+    for n in 2..=5 {
+        for source in 0..n {
+            for target in 0..n {
+                if source == target {
+                    continue;
+                }
+                check(n, &[source], &[target]);
+                for source2 in 0..n {
+                    if [source, target].contains(&source2) {
+                        continue;
+                    }
+                    for target2 in 0..n {
+                        if [source, target, source2].contains(&target2) {
+                            continue;
+                        }
+                        check(n, &[source, source2], &[target, target2]);
+                    }
+                }
+            }
+        }
+    }
+    check(6, &[2, 0, 1], &[4, 5, 3]);
+}
+
+#[test]
+fn excitation_generator_evolution_matches_independent_fock_exponential() {
+    let mapper = JordanWignerMapper::new();
+    for (n, sources, targets) in [
+        (3, vec![0], vec![2]),
+        (3, vec![2], vec![0]),
+        (4, vec![0, 1], vec![2, 3]),
+        (5, vec![1, 0], vec![4, 2]),
+    ] {
+        let op = FermionicOp::excitation_generator(n, &sources, &targets).unwrap();
+        let mapped = mapper.map_operator(&op).unwrap();
+        assert!(mapped.all_terms_commute());
+        let k =
+            excitation_fock_matrix(n, &sources, &targets).mapv(|g| Complex64::new(0.0, -1.0) * g);
+        for time in [-0.37, 0.0, 0.61] {
+            assert_matrix_close(
+                &bound_evolution(mapped.clone(), time),
+                &matrix_exp(&k, time),
+            );
+        }
+    }
+}
+
+#[test]
+fn composed_excitations_have_independent_parameters_and_correct_statevectors() {
+    let mapper = JordanWignerMapper::new();
+    let occupation = mapper.map_occupation(&[1, 1, 0, 0]).unwrap();
+    let mut circuit = BasisEncoding::new(occupation)
+        .build_circuit("reference")
+        .unwrap();
+    for (sources, targets, name) in [
+        (vec![0, 1], vec![2, 3], "theta_double"),
+        (vec![0], vec![2], "theta_single"),
+    ] {
+        let g = FermionicOp::excitation_generator(4, &sources, &targets).unwrap();
+        let block = PauliEvolutionAnsatz::new(mapper.map_operator(&g).unwrap())
+            .unwrap()
+            .with_time_param_name(name)
+            .with_strategy(EvolutionStrategy::Exact)
+            .build_circuit("excitation")
+            .unwrap();
+        assert_eq!(block.symbols().len(), 1);
+        circuit.compose(&block, None).unwrap();
+    }
+    assert_eq!(circuit.symbols().len(), 2);
+    assert!(circuit.symbols().contains("theta_double"));
+    assert!(circuit.symbols().contains("theta_single"));
+    let number = mapper.map_operator(&FermionicOp::total_number(4)).unwrap();
+    for (double, single) in [
+        (0.0_f64, 0.0_f64),
+        (0.37, 0.0),
+        (0.0, -0.21),
+        (0.37, -0.21),
+        (-0.43, 0.19),
+    ] {
+        // Bind in two stages to exercise independence and partial binding.
+        let partial = circuit
+            .assign_parameters(&Some(HashMap::from([("theta_double", double)])))
+            .unwrap();
+        assert_eq!(partial.symbols().len(), 1);
+        assert!(partial.symbols().contains("theta_single"));
+        let bound = partial
+            .assign_parameters(&Some(HashMap::from([("theta_single", single)])))
+            .unwrap();
+        assert!(bound.symbols().is_empty());
+        let state = Statevector::from_circuit(&bound).unwrap();
+        let mut expected = vec![Complex64::new(0.0, 0.0); 16];
+        expected[3] = (double.cos() * single.cos()).into();
+        expected[6] = (-double.cos() * single.sin()).into();
+        expected[12] = (double.sin() * single.cos()).into();
+        expected[9] = (-double.sin() * single.sin()).into();
+        for (actual, expected) in state.data().iter().zip(expected) {
+            assert!((*actual - expected).norm() < 1e-11);
+        }
+        assert!((number.expectation_statevector(&state).unwrap() - 2.0).abs() < 1e-11);
     }
 }
 

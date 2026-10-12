@@ -15,7 +15,7 @@
 use crate::qis::QisError;
 use crate::qis::error::validate_coefficient;
 use num_complex::Complex64;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Add, Mul, Neg, Sub};
 
 /// A creation or annihilation operator on a zero-based fermionic mode.
@@ -172,6 +172,91 @@ impl FermionicOp {
             })
             .collect();
         Self { num_modes, terms }
+    }
+
+    /// Creates the unit-weight Hermitian excitation generator `G = i(T - T†)`.
+    ///
+    /// For `sources = [i_0, ..., i_{r-1}]` and `targets = [a_0, ..., a_{r-1}]`,
+    /// the ordered excitation is
+    /// `T = a†_{a_0} ... a†_{a_{r-1}} a_{i_{r-1}} ... a_{i_0}`.
+    /// The rightmost operator acts first. Thus `[i, j] -> [a, b]` means
+    /// `T = a†_a a†_b a_j a_i`.
+    ///
+    /// Input order is preserved, without implicit sorting or normal ordering.
+    /// An odd permutation of either list negates `G`; applying odd permutations
+    /// to both lists preserves it. Explicit [`Self::normal_order`] preserves
+    /// these fermionic signs. No factorial or other normalization is applied.
+    ///
+    /// Mapping `G` and evolving it with [`crate::circuit::ansatz::PauliEvolutionAnsatz`]
+    /// implements `exp(-i θ G) = exp(θ (T - T†))`. The evolution parameter belongs
+    /// to the ansatz, not this operator. The generator conserves total particle
+    /// number. Reference occupations and spin interpretations are caller choices.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QisError::InvalidParameterValue`] if the lists are empty, have
+    /// unequal lengths, contain repeated modes, or overlap. Returns
+    /// [`QisError::ModeOutOfBounds`] if an index is outside `0..num_modes`.
+    ///
+    /// # Example
+    /// ```
+    /// use cqlib_core::qis::FermionicOp;
+    /// let single = FermionicOp::excitation_generator(4, &[0], &[2])?;
+    /// let double = FermionicOp::excitation_generator(4, &[0, 1], &[2, 3])?;
+    /// assert!(single.is_hermitian(0.0)?);
+    /// assert!(double.is_hermitian(0.0)?);
+    /// # Ok::<(), cqlib_core::qis::QisError>(())
+    /// ```
+    pub fn excitation_generator(
+        num_modes: usize,
+        sources: &[usize],
+        targets: &[usize],
+    ) -> Result<Self, QisError> {
+        if sources.len() != targets.len() {
+            return Err(QisError::InvalidParameterValue(
+                "excitation sources and targets must have equal lengths".into(),
+            ));
+        }
+        if sources.is_empty() {
+            return Err(QisError::InvalidParameterValue(
+                "excitation sources and targets must be nonempty".into(),
+            ));
+        }
+
+        let mut source_modes = BTreeSet::new();
+        let mut target_modes = BTreeSet::new();
+        for (label, modes, seen) in [
+            ("sources", sources, &mut source_modes),
+            ("targets", targets, &mut target_modes),
+        ] {
+            for &mode in modes {
+                if mode >= num_modes {
+                    return Err(QisError::ModeOutOfBounds { mode, num_modes });
+                }
+                if !seen.insert(mode) {
+                    return Err(QisError::InvalidParameterValue(format!(
+                        "excitation {label} contain repeated mode {mode}"
+                    )));
+                }
+            }
+        }
+        if let Some(mode) = source_modes.intersection(&target_modes).next() {
+            return Err(QisError::InvalidParameterValue(format!(
+                "excitation sources and targets overlap at mode {mode}"
+            )));
+        }
+
+        let term = targets.iter().copied().map(FermionicLadder::Create).chain(
+            sources
+                .iter()
+                .rev()
+                .copied()
+                .map(FermionicLadder::Annihilate),
+        );
+        let excitation = Self::from_term(num_modes, term, 1.0.into())?;
+        excitation
+            .try_sub(&excitation.adjoint())?
+            .scaled(Complex64::new(0.0, 1.0))
     }
 
     /// Returns the declared mode count.
