@@ -16,6 +16,172 @@ import numpy as np
 from cqlib.qis import Hamiltonian, PauliString, Phase, TrotterMode
 
 
+def test_checked_sparse_algebra_and_legacy_compatibility():
+    x = Hamiltonian.from_terms(1, [(PauliString.from_str("X"), 1)])
+    z = Hamiltonian.from_pauli(PauliString.from_str("Z"))
+    np.testing.assert_array_equal((x * z).to_matrix(), x.to_matrix() @ z.to_matrix())
+    np.testing.assert_array_equal(
+        (x * z).adjoint().to_matrix(), (x.to_matrix() @ z.to_matrix()).conj().T
+    )
+    assert (x - x).num_terms == 0
+    assert (2j * x).equiv(x * 2j)
+    assert (-x).equiv(x.scaled(-1))
+    assert x.add(x).equiv(x * 2)
+    assert x.add(x).num_terms == 1
+    # Existing addition and mutation contracts remain compatible.
+    legacy = x + x
+    assert legacy.num_terms == 2
+    legacy += x
+    assert legacy.num_terms == 3
+    assert legacy.normalized().num_terms == 1
+    assert legacy.add_term(PauliString.from_str("Z"), 1) is None
+    assert legacy.scale(2) is None
+
+
+def test_checked_normalization_and_truncation():
+    p = PauliString.from_str("X")
+    h = Hamiltonian.from_terms(1, [(p, 1e-15), (PauliString.from_str("+iX"), 2e-15)])
+    assert h.num_terms == 1
+    assert h.terms[0][1] == complex(1e-15, 2e-15)
+    assert h.normalized().terms == h.terms
+    assert not h.equiv(Hamiltonian(1))
+    truncated = h.copy()
+    assert truncated.chop(atol=3e-15) is None
+    assert truncated.num_terms == 0 and truncated.num_qubits == 1
+    legacy = h.copy()
+    legacy.simplify()
+    assert legacy.num_terms == 0  # Legacy behavior is deliberately retained.
+    assert Hamiltonian.from_terms(5, []).num_qubits == 5
+    assert Hamiltonian.from_terms(0, []).to_matrix().shape == (1, 1)
+
+
+def test_checked_tensor_and_qubit_embedding():
+    x = Hamiltonian.from_pauli(PauliString.from_str("X"))
+    z = Hamiltonian.from_pauli(PauliString.from_str("Z"))
+    np.testing.assert_array_equal(
+        x.tensor(z).to_matrix(), np.kron(x.to_matrix(), z.to_matrix())
+    )
+    embedded = x.remap_qubits([2], target_width=3)
+    assert embedded.equiv(Hamiltonian.from_pauli(PauliString.from_str("XII")))
+    assert x.tensor(Hamiltonian(2)).num_qubits == 3
+    wide = x.remap_qubits([69], target_width=70)
+    assert wide.num_qubits == 70 and wide.num_terms == 1
+    assert wide.equiv(wide.adjoint())
+    for mapping, width in (([], 1), ([1], 1), ([0, 1], 2)):
+        with pytest.raises(ValueError):
+            x.remap_qubits(mapping, width)
+    with pytest.raises(ValueError):
+        x.tensor(z).remap_qubits([0, 0], 2)
+    with pytest.raises(IndexError):
+        x.remap_qubits([-1], 1)
+    with pytest.raises(TypeError):
+        x.remap_qubits([0.5], 1)
+
+
+def test_checked_validation_and_failure_atomicity():
+    x = Hamiltonian.from_pauli(PauliString.from_str("X"))
+    with pytest.raises(ValueError):
+        Hamiltonian.from_terms(2, [(PauliString.from_str("X"), 0)])
+    with pytest.raises(ValueError):
+        Hamiltonian.from_terms(1, [(PauliString.from_str("X"), float("nan"))])
+    with pytest.raises(TypeError):
+        Hamiltonian.from_terms(1, [(PauliString.from_str("X"), "invalid")])
+    with pytest.raises(ValueError):
+        Hamiltonian.from_terms(-1, [])
+    for operation in (
+        lambda: x.add(Hamiltonian(2)),
+        lambda: x - Hamiltonian(2),
+        lambda: x * Hamiltonian(2),
+        lambda: x.equiv(Hamiltonian(2)),
+        lambda: Hamiltonian(1).scaled(float("inf")),
+    ):
+        with pytest.raises(ValueError):
+            operation()
+    assert x.__mul__(object()) is NotImplemented
+    assert x.__sub__(object()) is NotImplemented
+    assert x.__rmul__(object()) is NotImplemented
+    assert x.__add__(object()) is NotImplemented
+    assert x.__eq__(object()) is NotImplemented
+    assert x != object()
+    for atol in (-1, float("nan"), float("inf")):
+        before = x.copy()
+        with pytest.raises(ValueError):
+            x.chop(atol=atol)
+        assert x == before
+        with pytest.raises(ValueError):
+            x.equiv(before, atol=atol)
+        with pytest.raises(ValueError):
+            x.is_hermitian(atol=atol)
+    overflow = x.scaled(1e308)
+    with pytest.raises(ValueError):
+        overflow.add(overflow)
+    with pytest.raises(ValueError):
+        overflow * 2
+    invalid = x.copy()
+    invalid.scale(float("inf"))  # Legacy scale retains its historical behavior.
+    before = invalid.copy()
+    with pytest.raises(ValueError):
+        invalid.chop()
+    assert invalid.num_qubits == before.num_qubits
+    assert invalid.num_terms == before.num_terms
+    for (_, actual), (_, expected) in zip(invalid.terms, before.terms):
+        assert actual.real == expected.real
+        assert math.isnan(actual.imag) and math.isnan(expected.imag)
+
+
+def test_hermitian_projection_preserves_small_real_coefficients():
+    h = Hamiltonian.from_terms(1, [(PauliString.from_str("X"), 1e-15 + 1e-11j)])
+    assert not h.is_hermitian()
+    assert h.is_hermitian(atol=2e-11)
+    projected = h.normalized_hermitian()
+    assert projected.terms[0][1] == complex(1e-15)
+    assert h.terms[0][1].imag == 1e-11  # Projection returns a copy.
+    purely_imaginary = Hamiltonian.from_terms(1, [(PauliString.from_str("X"), 1e-11j)])
+    assert purely_imaginary.normalized_hermitian().num_terms == 0
+    with pytest.raises(ValueError):
+        Hamiltonian.from_terms(
+            1, [(PauliString.from_str("X"), 2e-10j)]
+        ).normalized_hermitian()
+
+
+def test_sparse_subnormal_and_near_unit_coefficients():
+    smallest = float.fromhex("0x0.0000000000001p-1022")
+    scalar = Hamiltonian.from_terms(0, [(PauliString(0), smallest)])
+    assert scalar.normalized().terms[0][1].real == smallest
+    assert scalar.scaled(2).terms[0][1].real == smallest * 2
+    assert scalar.to_matrix()[0, 0].real == smallest
+    almost_one = float(np.nextafter(1.0, 2.0))
+    x = Hamiltonian.from_pauli(PauliString.from_str("X"))
+    scaled = almost_one * x
+    assert scaled.terms[0][1].real == almost_one
+    assert scaled.adjoint().terms[0][1].real == almost_one
+    residue = scaled - x
+    assert residue.terms[0][1].real == almost_one - 1.0
+
+
+def test_small_symbolic_evolution_preserves_rotation_and_global_phase():
+    from cqlib.circuit.ansatz import EvolutionStrategy, PauliEvolutionAnsatz
+    from cqlib.qis import Statevector
+
+    small = 1e-12
+    for label in ("X", "I"):
+        h = Hamiltonian.from_terms(1, [(PauliString.from_str(label), small)])
+        circuit = (
+            PauliEvolutionAnsatz(h)
+            .with_strategy(EvolutionStrategy.exact())
+            .with_time_param_name("theta")
+            .build_circuit("small")
+        )
+        with pytest.raises(ValueError):
+            Statevector.from_circuit(
+                circuit
+            )  # Identity-only symbolic phase must also be bound.
+        bound = circuit.assign_parameters({"theta": 1.0})
+        state = Statevector.from_circuit(bound).data
+        index = 1 if label == "X" else 0
+        assert state[index].imag == pytest.approx(-math.sin(small), rel=1e-14, abs=0)
+
+
 def test_hamiltonian_initialization():
     h = Hamiltonian(2)
     assert h.num_qubits == 2

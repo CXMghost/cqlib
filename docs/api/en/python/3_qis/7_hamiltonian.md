@@ -223,3 +223,39 @@ assert trotterized.num_qubits == 1
 | `ValueError` | `expectation_probs` cannot derive the target operator from the given measurement bases. |
 
 The input types of observable computation are given in [Statevector](1_statevector.md) and [DensityMatrix](2_density_matrix.md); the definition of Trotter modes is given in [Trotter evolution](8_evolution.md).
+
+## Validated Sparse Algebra
+
+`from_terms(num_qubits, terms)` declares the width explicitly and accepts `(PauliString, int/float/complex)` pairs. It validates widths and finite coefficients, absorbs Pauli phases and merges duplicates, removing only exact zeros. Empty input retains the declared width.
+
+| Interface | Behavior |
+| --- | --- |
+| `normalized()` | Return a validated, merged copy retaining every nonzero coefficient. |
+| `add(other)` | Return a validated, merged sum on the same register. |
+| `A - B`, `A * B`, `-A` | Checked subtraction, operator multiplication and negation; B acts first in AB. |
+| `c * A`, `A * c`, `scaled(c)` | Validate the factor and resulting coefficients; return a new object. |
+| `adjoint()` | Return the conjugate transpose, accounting for Pauli phases. |
+| `chop(*, atol=0.0)` | Normalize and truncate by complex magnitude in place; errors preserve the object. |
+| `equiv(other, *, atol=0.0)` | Compare normalized coefficient differences; width mismatch raises an error. Tolerance is not a matrix operator-norm bound. |
+| `is_hermitian(*, atol=0.0)` | Compare with the adjoint: normalized coefficients satisfy 2*abs(imag) <= atol. |
+| `normalized_hermitian()` | Project imaginary residuals <= 1e-10 to zero; reject larger ones and retain all nonzero real parts. |
+| `tensor(other)` | Return self tensor other; other occupies low qubits. |
+| `remap_qubits(mapping, target_width)` | Embed mapping[source] = destination; destinations must be unique and in range. Unused targets are identity. |
+
+General algebra accepts non-Hermitian operators. Evolution and expectation consumers enforce Hermiticity. Tolerances must be finite and nonnegative. Qubit embedding is not a fermionic mode permutation.
+
+```python
+from cqlib.qis import Hamiltonian, PauliString
+
+x = Hamiltonian.from_terms(1, [(PauliString.from_str("X"), 1.0)])
+z = Hamiltonian.from_terms(1, [(PauliString.from_str("Z"), 1.0)])
+assert (x * z).equiv(Hamiltonian.from_terms(1, [(PauliString.from_str("Y"), -1j)]))
+assert x.add(x).equiv(2 * x)
+assert x.remap_qubits([2], target_width=3).num_qubits == 3
+```
+
+### Legacy Compatibility
+
+`from_list`, `add_term`, `scale`, `+` and `+=` keep their existing behavior. Addition concatenates stored terms; `scale` mutates in place. Legacy `simplify()` truncates near-zero coefficients. Use `normalized()` to retain small mapped coefficients, or `chop(atol=...)` for explicit truncation.
+
+`add_term()` and `scale()` return `None` and do not support chaining. New algebra operations raise `ValueError` on mismatched widths, nonfinite coefficients or intermediate coefficient overflow.
