@@ -47,8 +47,8 @@ Python and Rust/C versions evolve independently and do not need matching
 numbers. The Cargo.toml files at a given tag record the version mapping for that
 release; no separate release.toml is maintained.
 CI checks that the tag is equivalent to the Python version, core dependency
-versions are consistent across bindings, the minimum Python version is 3.10,
-and `abi3-py310` is enabled. Maintainers must update versions before tagging.
+versions are consistent across bindings, the minimum Python version is 3.11,
+and `abi3-py311` is enabled. Maintainers must update versions before tagging.
 
 ## Platforms and Artifacts
 
@@ -69,8 +69,8 @@ Images use the latest tag, with the resolved digest recorded in logs.
 On macOS, CI checks the shared library's minimum deployment version. Tests
 actually run on macOS 15; this does not constitute execution testing on macOS 11.
 
-Each platform produces one `cp310-abi3` wheel. That same wheel is installed into
-separate CPython 3.10, 3.11, 3.12, 3.13, and 3.14 environments for import checks,
+Each platform produces one `cp311-abi3` wheel. That same wheel is installed into
+separate CPython 3.11, 3.12, 3.13, 3.14, and 3.15 environments for import checks,
 pip check, and the full pytest suite. Tests are copied alongside the installed
 package to satisfy existing sibling-directory assertions. They do not import
 cqlib from the checkout, and existing tests are not modified, skipped, or marked

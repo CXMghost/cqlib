@@ -50,12 +50,12 @@ def versions(tag=None):
     binding = read_toml(BINDING / "Cargo.toml")
     python = str(Version(binding["package"]["version"]))
     require(
-        "abi3-py310" in binding["dependencies"]["pyo3"]["features"],
-        "Require abi3-py310",
+        "abi3-py311" in binding["dependencies"]["pyo3"]["features"],
+        "Require abi3-py311",
     )
     require(
-        read_toml(BINDING / "pyproject.toml")["project"]["requires-python"] == ">=3.10",
-        "Require Python >=3.10",
+        read_toml(BINDING / "pyproject.toml")["project"]["requires-python"] == ">=3.11",
+        "Require Python >=3.11",
     )
     for member in ("binding-python", "binding-c", "cqlib"):
         manifest = read_toml(ROOT / "crates" / member / "Cargo.toml")
@@ -170,8 +170,8 @@ def verify_wheel(directory=DIST):
         name == "cqlib" and version == Version(versions()[0]), "Wrong wheel version"
     )
     require(
-        all(t.interpreter == "cp310" and t.abi == "abi3" for t in tags),
-        "Wheel must use cp310-abi3",
+        all(t.interpreter == "cp311" and t.abi == "abi3" for t in tags),
+        "Wheel must use cp311-abi3",
     )
     with tempfile.TemporaryDirectory(prefix="cqlib-wheel-") as temporary:
         directory = Path(temporary)
