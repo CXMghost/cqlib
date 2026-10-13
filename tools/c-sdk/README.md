@@ -54,5 +54,10 @@ RPATH such as `@executable_path/../lib`; the dylib uses
 `@rpath/libbinding_c.dylib` as its install name. No checkout or Cargo build
 directory is needed by SDK consumers.
 
-The supported circuit construction and parameter APIs are documented in the
-generated header and illustrated in `tests/test_circuit.c`.
+Circuit construction, parameters, fermionic algebra, Jordan-Wigner mapping and
+checked sparse Pauli algebra are documented in the generated header and
+illustrated in `tests/test_circuit.c` and `tests/test_qis_algebra.c`. Both suites
+run against static and shared libraries. New checked algebra APIs return error
+codes and deliver owned results through output pointers; failed calls leave
+outputs unchanged. Initialize object output slots to NULL and free results with
+their corresponding functions.
