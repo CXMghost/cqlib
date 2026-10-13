@@ -909,6 +909,35 @@ fn test_global_phase() {
 }
 
 #[test]
+fn circuit_evolution_applies_global_phase_including_small_residuals() {
+    use crate::circuit::Parameter;
+    for num_qubits in [0, 1] {
+        for angle in [0.3, 1e-12, 1e-20] {
+            let mut circuit = Circuit::new(num_qubits);
+            circuit.set_global_phase(Parameter::from(angle));
+            let state = Statevector::from_circuit(&circuit).unwrap();
+            let expected = Complex64::from_polar(1.0, angle);
+            assert_eq!(state.data[0], expected);
+            let mut incremental = Statevector::new(num_qubits);
+            incremental.apply_circuit(&circuit).unwrap();
+            assert_eq!(incremental.data[0], expected);
+        }
+    }
+}
+
+#[test]
+fn circuit_evolution_rejects_unbound_global_phase_before_mutating() {
+    use crate::circuit::Parameter;
+    let mut circuit = Circuit::new(1);
+    circuit.x(Qubit::new(0)).unwrap();
+    circuit.set_global_phase(Parameter::symbol("phi"));
+    let mut state = Statevector::new(1);
+    let before = state.data.clone();
+    assert!(state.apply_circuit(&circuit).is_err());
+    assert_eq!(&state.data[..], &before[..]);
+}
+
+#[test]
 fn test_relative_phase() {
     // S gate introduces relative phase
     // S(H|0⟩) = S((|0⟩+|1⟩)/√2) = (|0⟩+i|1⟩)/√2

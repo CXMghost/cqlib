@@ -471,6 +471,7 @@ impl Statevector {
 
     /// Applies a quantum circuit to this statevector in-place.
     ///
+    /// The circuit's resolved global phase is applied, retaining nonzero residuals.
     /// Once bound to circuit qubit IDs, subsequent circuits must have the same
     /// IDs in the same order. The mapping is committed only on success; gates
     /// completed before an error are not rolled back.
@@ -520,6 +521,15 @@ impl Statevector {
         // Decompose circuit to basic gates
         let circuit = circuit.decompose()?;
         super::validate_terminal_measurements(&circuit)?;
+        let global_phase = circuit
+            .global_phase()
+            .evaluate(&None)
+            .map_err(|_| QisError::CircuitError(CircuitError::SymbolicParameterError))?;
+        if !global_phase.is_finite() {
+            return Err(QisError::InvalidParameterValue(
+                "circuit global phase must be finite".into(),
+            ));
+        }
         let sv = self;
 
         let qubit_map = super::prepare_qubit_map(&circuit.qubits(), &sv.qubit_map)?;
@@ -644,6 +654,7 @@ impl Statevector {
             }
         }
 
+        sv.apply_gphase(global_phase)?;
         sv.qubit_map = Some(qubit_map);
         Ok(())
     }
@@ -2688,7 +2699,7 @@ impl Statevector {
     /// # Arguments
     /// * `phi` - Phase angle
     pub fn apply_gphase(&mut self, phi: f64) -> Result<(), QisError> {
-        if phi.abs() < 1e-15 {
+        if phi == 0.0 {
             return Ok(());
         }
         let phase = Complex64::from_polar(1.0, phi);

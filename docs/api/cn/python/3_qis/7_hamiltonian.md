@@ -223,3 +223,39 @@ assert trotterized.num_qubits == 1
 | `ValueError` | `expectation_probs` 无法从给定的测量基推出待求算符。 |
 
 观测量计算的输入类型见 [Statevector](1_statevector.md) 与 [DensityMatrix](2_density_matrix.md)；Trotter 模式的定义见 [Trotter 演化](8_evolution.md)。
+
+## 经过校验的稀疏代数
+
+`from_terms(num_qubits, terms)` 明确指定宽度，接受 `(PauliString, 整数/浮点数/复数)` 项。它校验尺寸与有限系数、吸收 Pauli 相位并合并重复项，只删除精确零；空输入保留指定宽度。
+
+| 接口 | 行为 |
+| --- | --- |
+| `normalized()` | 返回校验与合并后的新对象，保留所有非零系数。 |
+| `add(other)` | 同宽度的安全加法，返回合并后的新对象。 |
+| `A - B`、`A * B`、`-A` | 安全减法、算子乘积及取负；AB 中 B 先作用。 |
+| `c * A`、`A * c`、`scaled(c)` | 校验标量及结果系数，返回新对象。 |
+| `adjoint()` | 返回共轭转置，包括 Pauli 相位。 |
+| `chop(*, atol=0.0)` | 原地规范化，并删除复模长不大于容差的系数；失败后对象不变。 |
+| `equiv(other, *, atol=0.0)` | 比较规范化后的系数差，宽度不一致报错；容差不是矩阵算子范数界。 |
+| `is_hermitian(*, atol=0.0)` | 与共轭转置比较，即规范化系数满足 2·abs(imag) ≤ atol。 |
+| `normalized_hermitian()` | 将模长不大于 1e-10 的虚部残差投影为零，更大虚部报错；保留任意非零实部。 |
+| `tensor(other)` | 返回 self ⊗ other，other 占低编号比特。 |
+| `remap_qubits(mapping, target_width)` | mapping[source] = destination；目标必须唯一且在范围内，未使用位置补恒等。 |
+
+这些接口支持非厄米算子，厄米性由演化与期望值消费者校验。所有容差必须有限且非负。比特嵌入是量子比特重标记，不是费米模态置换。
+
+```python
+from cqlib.qis import Hamiltonian, PauliString
+
+x = Hamiltonian.from_terms(1, [(PauliString.from_str("X"), 1.0)])
+z = Hamiltonian.from_terms(1, [(PauliString.from_str("Z"), 1.0)])
+assert (x * z).equiv(Hamiltonian.from_terms(1, [(PauliString.from_str("Y"), -1j)]))
+assert x.add(x).equiv(2 * x)
+assert x.remap_qubits([2], target_width=3).num_qubits == 3
+```
+
+### 旧接口兼容
+
+`from_list`、`add_term`、`scale`、`+`、`+=` 保留现有行为。其中 `+` 与 `+=` 拼接存储项；`scale` 原地缩放。`simplify()` 使用旧的近零截断策略，会删除微小系数。需要完整保留映射结果时使用 `normalized()`，需要明确截断时使用 `chop(atol=...)`。
+
+`add_term()` 和 `scale()` 原地修改并返回 `None`，不支持链式调用。新代数运算遇到宽度不一致、非有限系数或中间系数溢出时抛出 `ValueError`。
