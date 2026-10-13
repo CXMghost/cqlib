@@ -105,7 +105,8 @@ def build_and_test(platform=None):
         shutil.copy2(ROOT / "LICENSE.txt", sdk)
         shutil.copy2(ROOT / "tools/c-sdk/README.md", sdk / "README.md")
         (sdk / "tests").mkdir()
-        shutil.copy2(ROOT / "crates/binding-c/tests/test_circuit.c", sdk / "tests")
+        for test in ("test_circuit.c", "test_qis_algebra.c"):
+            shutil.copy2(ROOT / "crates/binding-c/tests" / test, sdk / "tests")
         shutil.copy2(ROOT / "tools/c-sdk/CMakeLists.txt", sdk / "tests")
         if sys.platform == "darwin":
             dylib = sdk / "lib/libbinding_c.dylib"
