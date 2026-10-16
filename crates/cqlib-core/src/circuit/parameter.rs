@@ -42,6 +42,92 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 use std::str::FromStr;
 use symb_anafis::{Expr, Simplify, parse, symb, visitor::ExprView};
 
+// The engine's map() treats polynomials as opaque and visits rebuilt nodes.
+// Walk the public view instead: it exposes polynomial terms, and replacement
+// expressions are returned immediately without being traversed themselves.
+fn substitute_parameter_expr<'a>(expr: &Expr, lookup: &impl Fn(&str) -> Option<&'a Expr>) -> Expr {
+    match expr.view() {
+        ExprView::Number(_) => expr.clone(),
+        ExprView::Symbol(name) => lookup(&name).cloned().unwrap_or_else(|| expr.clone()),
+        ExprView::Sum(children) | ExprView::Product(children) => {
+            let mapped: Vec<_> = children
+                .iter()
+                .map(|child| substitute_parameter_expr(child, lookup))
+                .collect();
+            if children.iter().zip(&mapped).all(|(a, b)| a.as_ref() == b) {
+                return expr.clone();
+            }
+
+            // Smart sum/product constructors can prune tiny coefficients.
+            // Construct a template of distinct function calls first, then use
+            // map() only on that template, whose children have no polynomials.
+            // Inserted expressions never pass through the smart constructors.
+            let slots = (0..mapped.len())
+                .map(|i| Expr::func("__cqlib_substitution_slot", Expr::number(i as f64)))
+                .collect();
+            let template = if matches!(expr.view(), ExprView::Sum(_)) {
+                Expr::sum(slots)
+            } else {
+                Expr::product(slots)
+            };
+            let slots = match template.view() {
+                ExprView::Sum(slots) | ExprView::Product(slots) => slots.into_owned(),
+                _ => return mapped.into_iter().next().unwrap_or(template),
+            };
+            // Match in template order so reconstruction preserves the original
+            // child order even if construction sorted the placeholder nodes.
+            let replacements: HashMap<_, _> = slots
+                .into_iter()
+                .map(|slot| (*slot).clone())
+                .zip(mapped)
+                .collect();
+            template.map(|node| {
+                replacements
+                    .get(node)
+                    .cloned()
+                    .unwrap_or_else(|| node.clone())
+            })
+        }
+        ExprView::Div(lhs, rhs) => {
+            let a = substitute_parameter_expr(lhs, lookup);
+            let b = substitute_parameter_expr(rhs, lookup);
+            if &a == lhs && &b == rhs {
+                expr.clone()
+            } else {
+                div_parameter_expr(a, b)
+            }
+        }
+        ExprView::Pow(base, exponent) => {
+            let a = substitute_parameter_expr(base, lookup);
+            let b = substitute_parameter_expr(exponent, lookup);
+            if &a == base && &b == exponent {
+                expr.clone()
+            } else {
+                Expr::pow_static(a, b)
+            }
+        }
+        ExprView::Function { name, args } => {
+            let mapped: Vec<_> = args
+                .iter()
+                .map(|arg| substitute_parameter_expr(arg, lookup))
+                .collect();
+            if args.iter().zip(&mapped).all(|(a, b)| a.as_ref() == b) {
+                expr.clone()
+            } else {
+                Expr::func_multi(name, mapped)
+            }
+        }
+        ExprView::Derivative { inner, var, order } => {
+            let mapped = substitute_parameter_expr(inner, lookup);
+            if &mapped == inner {
+                expr.clone()
+            } else {
+                Expr::derivative(mapped, var, order)
+            }
+        }
+    }
+}
+
 // Integral coefficients in the exactly representable integer range cannot
 // trigger the engine's near-zero/near-one pruning. Ordinary sums of symbols
 // therefore avoid coefficient collection and expression rebuilding entirely.
@@ -774,6 +860,7 @@ impl Parameter {
 
     /// Substitutes every occurrence of `symbol` in this expression with
     /// `param`, returning the resulting expression.
+    /// The inserted expression is not visited again; the original is unchanged.
     ///
     /// # Examples
     ///
@@ -788,7 +875,9 @@ impl Parameter {
     pub fn replace(&self, symbol: &str, param: impl Into<Self>) -> Self {
         let p: Self = param.into();
         Self {
-            expr: self.expr.substitute(symbol, &p.expr),
+            expr: substitute_parameter_expr(&self.expr, &|name| {
+                (name == symbol).then_some(&p.expr)
+            }),
         }
     }
 
@@ -815,12 +904,13 @@ impl Parameter {
             .map(|_| symbol)
     }
 
-    /// Substitutes every bound symbol in this expression and simplifies when possible.
+    /// Simultaneously substitutes bound symbols and simplifies when possible.
+    ///
+    /// Replacement expressions are inserted as-is, without applying other
+    /// bindings to them. The result is independent of binding iteration order,
+    /// and the original expression is unchanged.
     pub fn substitute_many(&self, bindings: &HashMap<String, Parameter>) -> Self {
-        let mut substituted = self.clone();
-        for (symbol, value) in bindings {
-            substituted = substituted.replace(symbol, value.clone());
-        }
+        let substituted = self.substitute_many_simultaneous(bindings);
         substituted.simplify().unwrap_or(substituted)
     }
 
@@ -835,15 +925,8 @@ impl Parameter {
         if bindings.is_empty() {
             return self.clone();
         }
-        let replacements = bindings
-            .iter()
-            .map(|(symbol, replacement)| (Self::symbol(symbol).expr, &replacement.expr))
-            .collect::<Vec<_>>();
-        Self::new(self.expr.map(|node| {
-            replacements
-                .iter()
-                .find(|(symbol, _)| node == symbol)
-                .map_or_else(|| node.clone(), |(_, replacement)| (*replacement).clone())
+        Self::new(substitute_parameter_expr(&self.expr, &|name| {
+            bindings.get(name).map(|replacement| &replacement.expr)
         }))
     }
 

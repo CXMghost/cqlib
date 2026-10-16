@@ -1319,3 +1319,265 @@ fn simultaneous_substitution_does_not_revisit_replacement_expressions() {
 
     assert_eq!(substituted.get_symbols(), HashSet::from(["b".to_string()]));
 }
+
+#[test]
+fn substitution_swaps_symbols_in_either_binding_order() {
+    let x = Parameter::symbol("x");
+    let y = Parameter::symbol("y");
+    let expression: Parameter = x.clone() + y.clone() * 2.0;
+    let values = Some(HashMap::from([("x", 1.0), ("y", 3.0)]));
+    for pairs in [
+        [("x", y.clone()), ("y", x.clone())],
+        [("y", x.clone()), ("x", y.clone())],
+    ] {
+        let bindings = pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        for result in [
+            expression.substitute_many(&bindings),
+            expression.substitute_many_simultaneous(&bindings),
+        ] {
+            assert_eq!(result.evaluate(&values).unwrap(), 5.0);
+            assert_eq!(
+                result.get_symbols(),
+                HashSet::from(["x".into(), "y".into()])
+            );
+        }
+    }
+    assert_eq!(expression.evaluate(&values).unwrap(), 7.0);
+}
+
+#[test]
+fn substitution_inserts_replacements_without_cascading() {
+    let x = Parameter::symbol("x");
+    let y = Parameter::symbol("y");
+    let z = Parameter::symbol("z");
+    let values = Some(HashMap::from([("x", 2.0), ("y", 10.0), ("z", 20.0)]));
+    let cases = [
+        (
+            x.clone(),
+            vec![("x", y.clone() + 1.0), ("y", Parameter::from(2.0))],
+            11.0,
+        ),
+        (x.clone(), vec![("x", x.clone() + 1.0)], 3.0),
+        (
+            x.clone(),
+            vec![
+                ("x", y.clone() + z.clone()),
+                ("y", Parameter::from(1.0)),
+                ("z", Parameter::from(2.0)),
+            ],
+            30.0,
+        ),
+        (
+            x.clone() + y.clone() * 2.0 + z.clone() * 3.0,
+            vec![("x", y), ("y", z), ("z", x)],
+            56.0,
+        ),
+    ];
+    for (expression, pairs, expected) in cases {
+        let bindings = pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        for result in [
+            expression.substitute_many(&bindings),
+            expression.substitute_many_simultaneous(&bindings),
+        ] {
+            assert_eq!(result.evaluate(&values).unwrap(), expected);
+        }
+    }
+}
+
+#[test]
+fn substitution_preserves_unbound_symbols_constants_and_noops() {
+    let expression = Parameter::symbol("x") + Parameter::symbol("y");
+    let values = Some(HashMap::from([("x", 2.0), ("y", 3.0), ("z", 4.0)]));
+    for bindings in [
+        HashMap::new(),
+        HashMap::from([("missing".into(), Parameter::symbol("z"))]),
+    ] {
+        assert_eq!(
+            expression
+                .substitute_many(&bindings)
+                .evaluate(&values)
+                .unwrap(),
+            5.0
+        );
+        assert_eq!(
+            expression.substitute_many_simultaneous(&bindings),
+            expression
+        );
+    }
+    let bindings = HashMap::from([
+        ("x".into(), Parameter::symbol("z") + 1.0),
+        ("y".into(), Parameter::from(2.0)),
+    ]);
+    assert_eq!(
+        expression
+            .substitute_many(&bindings)
+            .evaluate(&values)
+            .unwrap(),
+        7.0
+    );
+    assert_eq!(
+        Parameter::from(0.25).substitute_many(&bindings),
+        Parameter::from(0.25)
+    );
+    assert_eq!(
+        expression.replace("missing", Parameter::from(0.0)),
+        expression
+    );
+}
+
+#[test]
+fn substitution_reaches_polynomial_bases_and_nested_operations() {
+    let x = Parameter::symbol("x");
+    let y = Parameter::symbol("y");
+    let values = Some(HashMap::from([("y", 0.5)]));
+    let natural_polynomial: Parameter = x.clone() * x.clone() + x.clone() + 1.0;
+    let base = x.sin();
+    let function_polynomial: Parameter = base.clone() * base.clone() + base * 2.0 + 1.0;
+    let nested = (natural_polynomial.clone() / (x.clone() + Parameter::from(2.0))).cos()
+        + x.clone().pow(y.clone() + 1.0);
+    let bindings = HashMap::from([("x".into(), y.clone())]);
+    for expression in [natural_polynomial, function_polynomial, nested] {
+        let expected = expression
+            .evaluate(&Some(HashMap::from([("x", 0.5), ("y", 0.5)])))
+            .unwrap();
+        for result in [
+            expression.replace("x", y.clone()),
+            expression.substitute_many(&bindings),
+            expression.substitute_many_simultaneous(&bindings),
+        ] {
+            assert_eq!(result.get_symbols(), HashSet::from(["y".into()]));
+            assert!((result.evaluate(&values).unwrap() - expected).abs() < 1e-12);
+        }
+    }
+}
+
+#[test]
+fn substitution_does_not_revisit_rebuilt_division_or_power() {
+    let x = Parameter::symbol("x");
+    let y = Parameter::symbol("y");
+    let bindings = HashMap::from([
+        ("x".into(), Parameter::symbol("z")),
+        ("y".into(), Parameter::from(1.0)),
+        ("z".into(), Parameter::from(2.0)),
+    ]);
+    for expression in [x.clone() / y.clone(), x.pow(y)] {
+        for result in [
+            expression.substitute_many(&bindings),
+            expression.substitute_many_simultaneous(&bindings),
+        ] {
+            assert_eq!(result.get_symbols(), HashSet::from(["z".into()]));
+            assert_eq!(
+                result
+                    .evaluate(&Some(HashMap::from([("z", 10.0)])))
+                    .unwrap(),
+                10.0
+            );
+        }
+    }
+}
+
+#[test]
+fn substitution_preserves_formal_derivative_metadata() {
+    use symb_anafis::{Expr, visitor::ExprView};
+    let expression = Parameter::new(Expr::derivative(
+        Parameter::symbol("x").sin().into_expr(),
+        "x",
+        2,
+    ));
+    let bindings = HashMap::from([("x".into(), Parameter::symbol("y"))]);
+    for result in [
+        expression.replace("x", Parameter::symbol("y")),
+        expression.substitute_many_simultaneous(&bindings),
+    ] {
+        let ExprView::Derivative { inner, var, order } = result.as_expr().view() else {
+            panic!("expected a formal derivative")
+        };
+        assert_eq!(var, "x");
+        assert_eq!(order, 2);
+        assert_eq!(inner.variables(), HashSet::from(["y".into()]));
+    }
+}
+
+#[test]
+fn substitution_preserves_small_and_near_unit_affine_coefficients() {
+    let x = Parameter::symbol("x");
+    let y = Parameter::symbol("y");
+    let bindings = HashMap::from([("x".into(), y.clone())]);
+    for coefficient in [
+        1e-16,
+        f64::from_bits(1),
+        1.0 + f64::EPSILON,
+        1.0 - f64::EPSILON,
+    ] {
+        let expression = x.clone() * coefficient;
+        for result in [
+            expression.replace("x", y.clone()),
+            expression.substitute_many(&bindings),
+            expression.substitute_many_simultaneous(&bindings),
+        ] {
+            assert_eq!(
+                result.evaluate(&Some(HashMap::from([("y", 1.0)]))).unwrap(),
+                coefficient
+            );
+        }
+        let cancelled = expression.clone() - expression;
+        assert_eq!(
+            cancelled
+                .substitute_many(&bindings)
+                .evaluate(&None)
+                .unwrap(),
+            0.0
+        );
+    }
+}
+
+#[test]
+fn substitution_agrees_with_independent_numeric_composition() {
+    use rand::{Rng, SeedableRng, rngs::StdRng};
+    fn expression(rng: &mut StdRng, depth: u32) -> Parameter {
+        if depth == 0 {
+            return Parameter::symbol(["x", "y", "z"][rng.random_range(0..3)]);
+        }
+        let lhs = expression(rng, depth - 1);
+        match rng.random_range(0..5) {
+            0 => lhs + expression(rng, depth - 1),
+            1 => lhs * expression(rng, depth - 1),
+            2 => lhs.sin(),
+            3 => lhs.pow(2.0),
+            _ => lhs / (expression(rng, depth - 1).pow(2.0) + 1.0),
+        }
+    }
+    let mut rng = StdRng::seed_from_u64(0xB03);
+    for _ in 0..64 {
+        let original = expression(&mut rng, 3);
+        let bindings = ["x", "y", "z"]
+            .into_iter()
+            .map(|name| (name.to_string(), expression(&mut rng, 1)))
+            .collect::<HashMap<_, _>>();
+        let values = HashMap::from([
+            ("x", rng.random_range(-0.8..0.8)),
+            ("y", rng.random_range(-0.8..0.8)),
+            ("z", rng.random_range(-0.8..0.8)),
+        ]);
+        let composed = bindings
+            .iter()
+            .map(|(name, replacement)| {
+                (
+                    name.as_str(),
+                    replacement.evaluate(&Some(values.clone())).unwrap(),
+                )
+            })
+            .collect();
+        let expected = original.evaluate(&Some(composed)).unwrap();
+        for result in [
+            original.substitute_many(&bindings),
+            original.substitute_many_simultaneous(&bindings),
+        ] {
+            let actual = result.evaluate(&Some(values.clone())).unwrap();
+            assert!(
+                (actual - expected).abs() <= 1e-10 * expected.abs().max(1.0),
+                "{original}: actual={actual}, expected={expected}"
+            );
+        }
+    }
+}
