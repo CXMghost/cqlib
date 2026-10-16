@@ -1448,6 +1448,259 @@ fn test_decompose() {
 }
 
 #[test]
+fn test_decompose_global_phase_constant_and_empty_definitions() {
+    use crate::circuit::circuit_to_matrix;
+    use crate::circuit::test_utils::assert_matrix_approx_eq;
+
+    for (width, has_operations) in [(0, false), (1, false), (1, true), (2, true)] {
+        let mut inner = Circuit::new(width);
+        inner.set_global_phase(Parameter::from(0.37));
+        if has_operations {
+            inner.x(Qubit::new(0)).unwrap();
+            if width == 2 {
+                inner.cx(Qubit::new(0), Qubit::new(1)).unwrap();
+            }
+        }
+        let gate = inner.to_gate("Phased").unwrap();
+        for repetitions in 0..=2 {
+            let mut outer = Circuit::new(2);
+            outer.set_global_phase(Parameter::from(0.12));
+            let mut expected = Circuit::new(2);
+            expected.set_global_phase(Parameter::from(0.12 + repetitions as f64 * 0.37));
+            for _ in 0..repetitions {
+                let targets = [Qubit::new(1), Qubit::new(0)];
+                outer
+                    .append(gate.clone(), targets[..width].to_vec(), [], None)
+                    .unwrap();
+                if has_operations {
+                    expected.x(Qubit::new(1)).unwrap();
+                    if width == 2 {
+                        expected.cx(Qubit::new(1), Qubit::new(0)).unwrap();
+                    }
+                }
+            }
+            let flat = outer.decompose().unwrap();
+            assert!(
+                (flat.global_phase().evaluate(&None).unwrap() - (0.12 + repetitions as f64 * 0.37))
+                    .abs()
+                    < 1e-12
+            );
+            let expected_matrix = circuit_to_matrix(&expected, None).unwrap();
+            assert_matrix_approx_eq(
+                &circuit_to_matrix(&outer, None).unwrap(),
+                &expected_matrix,
+                1e-10,
+            );
+            assert_matrix_approx_eq(
+                &circuit_to_matrix(&flat, None).unwrap(),
+                &expected_matrix,
+                1e-10,
+            );
+            assert_matrix_approx_eq(
+                &circuit_to_matrix(&flat.decompose().unwrap(), None).unwrap(),
+                &expected_matrix,
+                1e-10,
+            );
+            assert_eq!(flat.operations().len(), expected.operations().len());
+            assert_eq!(outer.global_phase().evaluate(&None).unwrap(), 0.12);
+        }
+    }
+}
+
+#[test]
+fn test_decompose_global_phase_only_symbols_and_explicit_signature() {
+    use crate::circuit::circuit_to_matrix;
+    use crate::circuit::test_utils::assert_matrix_approx_eq;
+    use std::collections::HashMap;
+
+    let mut inner = Circuit::new(1);
+    inner.set_global_phase(Parameter::symbol("theta") / 2.0);
+    let gate = CircuitGate::with_signature(
+        "PhaseOnly",
+        FrozenCircuit::new(inner),
+        ["unused".to_string(), "theta".to_string()],
+    )
+    .unwrap();
+    let mut outer = Circuit::new(1);
+    outer.set_global_phase(Parameter::symbol("phi") / 3.0);
+    outer
+        .circuit_gate(
+            gate,
+            vec![Qubit::new(0)],
+            [
+                ParameterValue::Fixed(0.7),
+                ParameterValue::from(Parameter::symbol("x") * 2.0),
+            ],
+        )
+        .unwrap();
+    let flat = outer.decompose().unwrap();
+    assert!(flat.operations().is_empty());
+    assert_eq!(
+        flat.used_symbols().iter().cloned().collect::<HashSet<_>>(),
+        HashSet::from(["phi".to_string(), "x".to_string()])
+    );
+    for (x, phi) in [(0.37, -0.23), (-0.61, 0.44)] {
+        let bindings = Some(HashMap::from([("x", x), ("phi", phi)]));
+        let mut expected = Circuit::new(1);
+        expected.set_global_phase(Parameter::from(phi / 3.0 + x));
+        let expected_matrix = circuit_to_matrix(&expected, None).unwrap();
+        assert_matrix_approx_eq(
+            &circuit_to_matrix(&flat.assign_parameters(&bindings).unwrap(), None).unwrap(),
+            &expected_matrix,
+            1e-10,
+        );
+        assert_matrix_approx_eq(
+            &circuit_to_matrix(
+                &outer
+                    .assign_parameters(&bindings)
+                    .unwrap()
+                    .decompose()
+                    .unwrap(),
+                None,
+            )
+            .unwrap(),
+            &expected_matrix,
+            1e-10,
+        );
+    }
+}
+
+#[test]
+fn test_decompose_global_phase_nested_symbolic_and_inverse() {
+    use crate::circuit::circuit_to_matrix;
+    use crate::circuit::symbolic_matrix::{circuit_to_symbolic_matrix, evaluate_symbolic_matrix};
+    use crate::circuit::test_utils::assert_matrix_approx_eq;
+    use std::collections::HashMap;
+
+    let a = Parameter::symbol("a");
+    let b = Parameter::symbol("b");
+    let mut inner = Circuit::from_qubits(vec![Qubit::new(7), Qubit::new(2)]).unwrap();
+    inner.set_global_phase(a.clone() + b.clone() * 2.0);
+    inner.rx(Qubit::new(7), a.clone() - b.clone()).unwrap();
+    inner.cx(Qubit::new(7), Qubit::new(2)).unwrap();
+    let inner_gate = CircuitGate::with_signature(
+        "Inner",
+        FrozenCircuit::new(inner),
+        ["a".to_string(), "b".to_string()],
+    )
+    .unwrap();
+    let mut middle = Circuit::from_qubits(vec![Qubit::new(5), Qubit::new(1)]).unwrap();
+    middle.set_global_phase(a.clone() / 2.0);
+    middle
+        .circuit_gate(
+            inner_gate,
+            vec![Qubit::new(5), Qubit::new(1)],
+            [ParameterValue::from(b), ParameterValue::from(a)],
+        )
+        .unwrap();
+    let middle_gate = CircuitGate::with_signature(
+        "Middle",
+        FrozenCircuit::new(middle),
+        ["a".to_string(), "b".to_string()],
+    )
+    .unwrap();
+    let x = Parameter::symbol("x");
+    let mut outer = Circuit::new(2);
+    outer.set_global_phase(x.clone() / 3.0);
+    outer
+        .circuit_gate(
+            middle_gate,
+            vec![Qubit::new(1), Qubit::new(0)],
+            [
+                ParameterValue::from(x + 1.0),
+                ParameterValue::from(Parameter::symbol("y")),
+            ],
+        )
+        .unwrap();
+
+    for inverse in [false, true] {
+        let circuit = if inverse {
+            outer.inverse().unwrap()
+        } else {
+            outer.clone()
+        };
+        let flat = circuit.decompose().unwrap();
+        assert_eq!(
+            flat.used_symbols().iter().cloned().collect::<HashSet<_>>(),
+            HashSet::from(["x".to_string(), "y".to_string()])
+        );
+        let symbolic = circuit_to_symbolic_matrix(&flat, None).unwrap();
+        for (x, y) in [(0.37, -0.23), (-0.61, 0.44)] {
+            let bindings = Some(HashMap::from([("x", x), ("y", y)]));
+            let mut expected = Circuit::new(2);
+            let expected_phase = x / 3.0 + (x + 1.0) / 2.0 + y + 2.0 * (x + 1.0);
+            expected.set_global_phase(Parameter::from(expected_phase));
+            expected.rx(Qubit::new(1), y - (x + 1.0)).unwrap();
+            expected.cx(Qubit::new(1), Qubit::new(0)).unwrap();
+            if inverse {
+                expected = expected.inverse().unwrap();
+            }
+            let expected_matrix = circuit_to_matrix(&expected, None).unwrap();
+            assert!(
+                (flat.global_phase().evaluate(&bindings).unwrap()
+                    - if inverse {
+                        -expected_phase
+                    } else {
+                        expected_phase
+                    })
+                .abs()
+                    < 1e-12
+            );
+            for candidate in [
+                flat.assign_parameters(&bindings).unwrap(),
+                circuit
+                    .assign_parameters(&bindings)
+                    .unwrap()
+                    .decompose()
+                    .unwrap(),
+                circuit.assign_parameters(&bindings).unwrap(),
+            ] {
+                assert_matrix_approx_eq(
+                    &circuit_to_matrix(&candidate, None).unwrap(),
+                    &expected_matrix,
+                    1e-10,
+                );
+            }
+            assert_matrix_approx_eq(
+                &evaluate_symbolic_matrix(&symbolic, &bindings).unwrap(),
+                &expected_matrix,
+                1e-10,
+            );
+        }
+    }
+}
+
+#[test]
+fn test_decompose_global_phase_rejects_invalid_constants() {
+    let mut inner = Circuit::new(1);
+    inner.set_global_phase(Parameter::symbol("theta").ln());
+    let mut outer = Circuit::new(1);
+    outer
+        .append(
+            inner.to_gate("LogPhase").unwrap(),
+            [Qubit::new(0)],
+            [ParameterValue::Fixed(-1.0)],
+            None,
+        )
+        .unwrap();
+    assert!(outer.decompose().is_err());
+
+    let mut inner = Circuit::new(1);
+    inner.set_global_phase(Parameter::from(1e308));
+    let mut outer = Circuit::new(1);
+    outer.set_global_phase(Parameter::from(1e308));
+    outer
+        .append(
+            inner.to_gate("LargePhase").unwrap(),
+            [Qubit::new(0)],
+            [],
+            None,
+        )
+        .unwrap();
+    assert!(outer.decompose().is_err());
+}
+
+#[test]
 fn test_decompose_nested() {
     let mut l1 = Circuit::new(1);
     l1.h(Qubit::new(0)).unwrap();

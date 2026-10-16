@@ -2255,6 +2255,8 @@ impl Circuit {
     ///      the result is `Rx(beta+1)`.
     /// 2. **Qubit Mapping**: Virtual qubits in the sub-circuit definition are mapped to the
     ///    physical qubits in the parent circuit.
+    /// 3. **Global Phase**: Each sub-circuit's phase is substituted using its call arguments
+    ///    and accumulated into the flattened circuit, including empty definitions.
     ///
     /// # Returns
     ///
@@ -2263,8 +2265,9 @@ impl Circuit {
     ///
     /// # Errors
     ///
-    /// Returns [`CircuitError::UnresolvedParameter`] if a symbolic parameter in a sub-circuit
-    /// or control flow body cannot be evaluated to a concrete value.
+    /// Returns an error if a fully resolved parameter or accumulated global phase is invalid,
+    /// or if the circuit contains unsupported classical control. Unbound symbolic parameters
+    /// and phases are preserved.
     pub fn decompose(&self) -> Result<Circuit, CircuitError> {
         let mut new_circuit = Circuit::from_qubits(self.qubits()).unwrap();
         new_circuit.classical_vars = self.classical_vars.clone();
@@ -2365,6 +2368,21 @@ impl Circuit {
                     if i < resolved_params.len() {
                         next_param_map.insert(sym.clone(), resolved_params[i].clone());
                     }
+                }
+
+                // Phase is circuit metadata, so it must be accumulated even when
+                // the definition has no operations. Each gate application adds it once.
+                if cg.circuit.circuit.global_phase_param() != &CircuitParam::Fixed(0.0) {
+                    let phase =
+                        Self::apply_param_map(cg.circuit.circuit.global_phase(), &next_param_map);
+                    if phase.get_symbols().is_empty() {
+                        phase.evaluate(&None)?;
+                    }
+                    let phase = target_circuit.global_phase() + phase;
+                    if phase.get_symbols().is_empty() {
+                        phase.evaluate(&None)?;
+                    }
+                    target_circuit.set_global_phase(phase);
                 }
 
                 // Qubit Map: Inner Qubit -> Outer Qubit
