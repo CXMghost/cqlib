@@ -46,6 +46,7 @@ pub struct FrozenCircuit {
     pub(crate) circuit: Circuit,
     used_symbols: Arc<IndexSet<String>>,
     symbolic_matrix_cache: Arc<OnceLock<Arc<SymbolicMatrix>>>,
+    storage_order_symbolic_matrix_cache: Arc<OnceLock<Arc<SymbolicMatrix>>>,
 }
 
 impl FrozenCircuit {
@@ -67,6 +68,7 @@ impl FrozenCircuit {
             circuit,
             used_symbols,
             symbolic_matrix_cache: Arc::new(OnceLock::new()),
+            storage_order_symbolic_matrix_cache: Arc::new(OnceLock::new()),
         }
     }
 
@@ -108,6 +110,23 @@ impl FrozenCircuit {
         let matrix = Arc::new(circuit_to_symbolic_matrix(&self.circuit, None)?);
         let _ = self.symbolic_matrix_cache.set(matrix.clone());
         Ok(self.symbolic_matrix_cache.get().cloned().unwrap_or(matrix))
+    }
+
+    /// CircuitGate's positional basis is distinct from the numeric-sorted
+    /// default used by the public FrozenCircuit matrix and UnitaryGate.
+    fn symbolic_matrix_in_storage_order(&self) -> Result<Arc<SymbolicMatrix>, CircuitError> {
+        if let Some(matrix) = self.storage_order_symbolic_matrix_cache.get() {
+            return Ok(matrix.clone());
+        }
+
+        let order: Vec<usize> = self.circuit.qubits().iter().map(|q| q.index()).collect();
+        let matrix = Arc::new(circuit_to_symbolic_matrix(&self.circuit, Some(&order))?);
+        let _ = self.storage_order_symbolic_matrix_cache.set(matrix.clone());
+        Ok(self
+            .storage_order_symbolic_matrix_cache
+            .get()
+            .cloned()
+            .unwrap_or(matrix))
     }
 }
 
@@ -350,9 +369,12 @@ impl CircuitGate {
         self.circuit.clone()
     }
 
-    /// Returns the cached symbolic matrix for this gate's frozen circuit.
+    /// Returns the cached symbolic matrix in this gate's positional basis.
+    ///
+    /// The first qubit in the inner circuit's storage order is the
+    /// least-significant matrix bit, matching the first application argument.
     pub fn symbolic_matrix(&self) -> Result<Arc<SymbolicMatrix>, CircuitError> {
-        self.circuit.symbolic_matrix()
+        self.circuit.symbolic_matrix_in_storage_order()
     }
 
     /// Returns the name of this circuit gate.

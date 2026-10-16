@@ -546,7 +546,10 @@ pub fn circuit_to_symbolic_matrix(
                         .circuit()
                         .assign_parameters(&Some(bindings))
                         .map_err(|_| CircuitError::SymbolicParameterError)?;
-                    let sub_matrix = circuit_to_matrix(&sub_circuit, None)?;
+                    // Match CircuitGate argument positions to the inner storage order.
+                    let order: Vec<usize> =
+                        sub_circuit.qubits().iter().map(|q| q.index()).collect();
+                    let sub_matrix = circuit_to_matrix(&sub_circuit, Some(&order))?;
                     push_numeric_gate(
                         &mut matrix,
                         &mut numeric_run,

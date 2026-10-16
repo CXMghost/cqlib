@@ -213,7 +213,10 @@ pub fn circuit_to_matrix(
                     .circuit
                     .assign_parameters(&Some(bindings))
                     .map_err(|_| CircuitError::SymbolicParameterError)?;
-                let sub_matrix = circuit_to_matrix(&sub_circuit, None)?;
+                // Gate arguments map positionally to the inner storage order,
+                // which can differ from the default numeric matrix order.
+                let order: Vec<usize> = sub_circuit.qubits().iter().map(|q| q.index()).collect();
+                let sub_matrix = circuit_to_matrix(&sub_circuit, Some(&order))?;
                 apply_gate_to_matrix(&mut matrix, &sub_matrix, &bits)?;
             }
             Instruction::ClassicalControl(_) => {

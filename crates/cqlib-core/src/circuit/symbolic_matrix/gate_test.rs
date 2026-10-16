@@ -796,6 +796,202 @@ fn test_substitution_cross_dependency() {
 }
 
 #[test]
+fn test_circuit_gate_storage_order_constant_symbolic_matrix() {
+    for order in [[7, 2], [1, 0], [2, 7], [0, 1]] {
+        let order = order.map(Qubit::new);
+        let mut inner = Circuit::from_qubits(order.to_vec()).unwrap();
+        inner.x(order[0]).unwrap();
+        let gate = inner.to_gate("StoredOrderX").unwrap();
+        for targets in [[4, 9], [9, 4]] {
+            let targets = targets.map(Qubit::new);
+            let mut circuit = Circuit::from_qubits(vec![Qubit::new(9), Qubit::new(4)]).unwrap();
+            circuit.append(gate.clone(), targets, [], None).unwrap();
+            let mut expected = Circuit::from_qubits(vec![Qubit::new(9), Qubit::new(4)]).unwrap();
+            expected.x(targets[0]).unwrap();
+            for output_order in [None, Some([9, 4].as_slice())] {
+                let symbolic = circuit_to_symbolic_matrix(&circuit, output_order).unwrap();
+                let evaluated = evaluate_symbolic_matrix(&symbolic, &None).unwrap();
+                assert_matrix_approx_eq(
+                    &evaluated,
+                    &circuit_to_matrix(&expected, output_order).unwrap(),
+                    1e-10,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_circuit_gate_storage_order_nested_parameterized_inverse() {
+    for middle_order in [None, Some([0, 1]), Some([5, 1])] {
+        let mut body = Circuit::from_qubits(vec![Qubit::new(7), Qubit::new(2)]).unwrap();
+        body.rx(Qubit::new(7), Parameter::symbol("theta")).unwrap();
+        body.cx(Qubit::new(7), Qubit::new(2)).unwrap();
+        if let Some(order) = middle_order {
+            let gate = body.to_gate("Inner").unwrap();
+            body = Circuit::from_qubits(order.map(Qubit::new).to_vec()).unwrap();
+            body.append(
+                gate,
+                order.map(Qubit::new),
+                [ParameterValue::from(Parameter::symbol("theta"))],
+                None,
+            )
+            .unwrap();
+        }
+        let mut outer = Circuit::new(2);
+        outer
+            .append(
+                body.to_gate("Body").unwrap(),
+                [Qubit::new(0), Qubit::new(1)],
+                [ParameterValue::from(Parameter::symbol("x"))],
+                None,
+            )
+            .unwrap();
+        for inverse in [false, true] {
+            let circuit = if inverse {
+                outer.inverse().unwrap()
+            } else {
+                outer.clone()
+            };
+            let symbolic = circuit_to_symbolic_matrix(&circuit, None).unwrap();
+            for angle in [0.37, -0.61] {
+                let bindings = Some(HashMap::from([("x", angle)]));
+                let bound = circuit.assign_parameters(&bindings).unwrap();
+                let mut expected = Circuit::new(2);
+                expected.rx(Qubit::new(0), angle).unwrap();
+                expected.cx(Qubit::new(0), Qubit::new(1)).unwrap();
+                if inverse {
+                    expected = expected.inverse().unwrap();
+                }
+                let expected_matrix = circuit_to_matrix(&expected, None).unwrap();
+                assert_matrix_approx_eq(
+                    &evaluate_symbolic_matrix(&symbolic, &bindings).unwrap(),
+                    &expected_matrix,
+                    1e-10,
+                );
+                assert_matrix_approx_eq(
+                    &circuit_to_matrix(&bound, None).unwrap(),
+                    &expected_matrix,
+                    1e-10,
+                );
+                assert_matrix_approx_eq(
+                    &circuit_to_matrix(&bound.decompose().unwrap(), None).unwrap(),
+                    &expected_matrix,
+                    1e-10,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_circuit_gate_storage_order_cache_isolation() {
+    use crate::circuit::gate::CircuitGate;
+
+    let mut inner = Circuit::from_qubits(vec![Qubit::new(7), Qubit::new(2)]).unwrap();
+    inner.rx(Qubit::new(7), Parameter::symbol("theta")).unwrap();
+    inner.cx(Qubit::new(7), Qubit::new(2)).unwrap();
+    let frozen = FrozenCircuit::new(inner.clone());
+    let gate = CircuitGate::new("Cached", frozen.clone()).unwrap();
+    // Materializing either cache first must not determine the other's basis.
+    for gate_first in [false, true] {
+        let frozen = if gate_first {
+            FrozenCircuit::new(inner.clone())
+        } else {
+            frozen.clone()
+        };
+        let gate = if gate_first {
+            CircuitGate::new("Cached", frozen.clone()).unwrap()
+        } else {
+            gate.clone()
+        };
+        if gate_first {
+            gate.symbolic_matrix().unwrap();
+        } else {
+            frozen.symbolic_matrix().unwrap();
+        }
+        let gate_matrix = gate.symbolic_matrix().unwrap();
+        assert!(Arc::ptr_eq(
+            &gate_matrix,
+            &gate.clone().symbolic_matrix().unwrap()
+        ));
+        assert_eq!(frozen, FrozenCircuit::new(inner.clone()));
+        let bindings = Some(HashMap::from([("theta", 0.37)]));
+        let assigned = inner.assign_parameters(&bindings).unwrap();
+        assert_matrix_approx_eq(
+            &evaluate_symbolic_matrix(&gate_matrix, &bindings).unwrap(),
+            &circuit_to_matrix(&assigned, Some(&[7, 2])).unwrap(),
+            1e-10,
+        );
+        let default_matrix = frozen.symbolic_matrix().unwrap();
+        assert!(Arc::ptr_eq(
+            &default_matrix,
+            &frozen.symbolic_matrix().unwrap()
+        ));
+        assert_matrix_approx_eq(
+            &evaluate_symbolic_matrix(&default_matrix, &bindings).unwrap(),
+            &circuit_to_matrix(&assigned, None).unwrap(),
+            1e-10,
+        );
+        // Circuit-backed UnitaryGate keeps its existing numeric-sorted basis.
+        let unitary = UnitaryGate::new("Frozen", 2, 1)
+            .with_circuit(Arc::new(frozen))
+            .unwrap();
+        let mut unitary_circuit = Circuit::new(2);
+        unitary_circuit
+            .append(
+                Instruction::UnitaryGate(Box::new(unitary)),
+                [Qubit::new(0), Qubit::new(1)],
+                [ParameterValue::from(Parameter::symbol("x"))],
+                None,
+            )
+            .unwrap();
+        let mut unitary_expected = Circuit::new(2);
+        unitary_expected.rx(Qubit::new(1), 0.37).unwrap();
+        unitary_expected.cx(Qubit::new(1), Qubit::new(0)).unwrap();
+        let bindings = Some(HashMap::from([("x", 0.37)]));
+        let expected = circuit_to_matrix(&unitary_expected, None).unwrap();
+        assert_matrix_approx_eq(
+            &evaluate_symbolic_matrix(
+                &circuit_to_symbolic_matrix(&unitary_circuit, None).unwrap(),
+                &bindings,
+            )
+            .unwrap(),
+            &expected,
+            1e-10,
+        );
+        assert_matrix_approx_eq(
+            &circuit_to_matrix(&unitary_circuit.assign_parameters(&bindings).unwrap(), None)
+                .unwrap(),
+            &expected,
+            1e-10,
+        );
+        let mut circuit = Circuit::new(2);
+        let mut expected = Circuit::new(2);
+        for (targets, scale) in [([0, 1], 1.0), ([1, 0], 2.0)] {
+            circuit
+                .append(
+                    Instruction::CircuitGate(Box::new(gate.clone())),
+                    targets.map(Qubit::new),
+                    [ParameterValue::from(Parameter::symbol("x") * scale)],
+                    None,
+                )
+                .unwrap();
+            expected.rx(Qubit::new(targets[0]), 0.37 * scale).unwrap();
+            expected
+                .cx(Qubit::new(targets[0]), Qubit::new(targets[1]))
+                .unwrap();
+        }
+        let symbolic = circuit_to_symbolic_matrix(&circuit, None).unwrap();
+        assert_matrix_approx_eq(
+            &evaluate_symbolic_matrix(&symbolic, &bindings).unwrap(),
+            &circuit_to_matrix(&expected, None).unwrap(),
+            1e-10,
+        );
+    }
+}
+
+#[test]
 fn test_frozen_circuit_symbolic_matrix_cache_reuses_arc() {
     let mut inner = Circuit::new(1);
     inner.rx(Qubit::new(0), Parameter::symbol("theta")).unwrap();

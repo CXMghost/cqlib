@@ -21,9 +21,69 @@ Test coverage:
 """
 
 import pytest
+import numpy as np
 
 from cqlib.circuit import Circuit, Parameter
 from cqlib.circuit.gates import CircuitGate
+
+
+class TestCircuitGateStorageOrder:
+    @pytest.mark.parametrize("order", [[7, 2], [1, 0], [2, 7], [0, 1]])
+    @pytest.mark.parametrize("targets", [[0, 1], [1, 0]])
+    def test_matrix_uses_internal_storage_order(self, order, targets):
+        inner = Circuit(order)
+        inner.x(order[0])
+        outer = Circuit(2)
+        outer.append_circuit_gate(inner.to_gate("StoredOrderX"), targets)
+        expected = Circuit(2)
+        expected.x(targets[0])
+        for output_order in (None, [1, 0]):
+            reference = expected.to_matrix(output_order)
+            np.testing.assert_allclose(
+                outer.to_matrix(output_order), reference, rtol=0, atol=1e-10
+            )
+            np.testing.assert_allclose(
+                outer.to_symbolic_matrix(output_order).evaluate(),
+                reference,
+                rtol=0,
+                atol=1e-10,
+            )
+            np.testing.assert_allclose(
+                outer.decompose().to_matrix(output_order), reference, rtol=0, atol=1e-10
+            )
+        assert outer.to_matrix()[1 << targets[0], 0] == 1
+
+    @pytest.mark.parametrize("middle_order", [None, [0, 1], [5, 1]])
+    @pytest.mark.parametrize("inverse", [False, True])
+    def test_nested_parameterized_matrix_and_inverse(self, middle_order, inverse):
+        theta = Parameter("theta")
+        body = Circuit([7, 2])
+        body.rx(7, theta)
+        body.cx(7, 2)
+        if middle_order is not None:
+            gate = body.to_gate("Inner")
+            body = Circuit(middle_order)
+            body.append_circuit_gate(gate, middle_order, [theta])
+        outer = Circuit(2)
+        outer.append_circuit_gate(body.to_gate("Body"), [0, 1], [Parameter("x")])
+        if inverse:
+            outer = outer.inverse()
+        symbolic = outer.to_symbolic_matrix()
+        for angle in (0.37, -0.61):
+            expected = Circuit(2)
+            expected.rx(0, angle)
+            expected.cx(0, 1)
+            if inverse:
+                expected = expected.inverse()
+            reference = expected.to_matrix()
+            bound = outer.assign_parameters({"x": angle})
+            np.testing.assert_allclose(bound.to_matrix(), reference, rtol=0, atol=1e-10)
+            np.testing.assert_allclose(
+                symbolic.evaluate({"x": angle}), reference, rtol=0, atol=1e-10
+            )
+            np.testing.assert_allclose(
+                bound.decompose().to_matrix(), reference, rtol=0, atol=1e-10
+            )
 
 
 class TestCircuitGateCreation:
