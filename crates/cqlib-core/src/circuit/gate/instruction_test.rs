@@ -17,6 +17,127 @@ use crate::circuit::{
 };
 
 #[test]
+fn circuit_backed_unitary_instruction_matrix_uses_msb_first_qubits() {
+    use crate::circuit::circuit_to_matrix;
+    use crate::circuit::test_utils::assert_matrix_approx_eq;
+
+    for order in [vec![], vec![7], vec![0, 1], vec![1, 0], vec![9, 2, 7]] {
+        let mut numeric_order = order.clone();
+        numeric_order.sort_unstable();
+        for parameterized in [false, true] {
+            let mut body =
+                Circuit::from_qubits(order.iter().copied().map(Qubit::new).collect()).unwrap();
+            if let Some(&first) = numeric_order.first() {
+                body.rx(
+                    Qubit::new(first),
+                    if parameterized {
+                        Parameter::symbol("theta")
+                    } else {
+                        Parameter::from(0.7)
+                    },
+                )
+                .unwrap();
+                if numeric_order.len() > 1 {
+                    body.cx(
+                        Qubit::new(first),
+                        Qubit::new(*numeric_order.last().unwrap()),
+                    )
+                    .unwrap();
+                }
+            }
+            body.set_global_phase(if parameterized {
+                Parameter::symbol("theta")
+            } else {
+                Parameter::from(0.7)
+            });
+            let gate = UnitaryGate::new("positional", order.len() as u16, u16::from(parameterized))
+                .with_circuit(Arc::new(FrozenCircuit::new(body.clone())))
+                .unwrap();
+            let params = if parameterized { vec![0.7] } else { vec![] };
+            let bindings = Some(std::collections::HashMap::from([("theta", 0.7)]));
+            let bound = body.assign_parameters(&bindings).unwrap();
+            let lsb_order: Vec<usize> = numeric_order.iter().map(|&q| q as usize).collect();
+            // The definition API keeps its existing numeric-ID, LSB-first basis.
+            assert_matrix_approx_eq(
+                gate.matrix_for_params(&params).unwrap().as_ref(),
+                &circuit_to_matrix(&bound, Some(&lsb_order)).unwrap(),
+                1e-12,
+            );
+
+            let instruction = Instruction::UnitaryGate(Box::new(gate));
+            let matrix = instruction.matrix(&params).unwrap();
+            let qubits: Vec<Qubit> = [11, 3, 8][..order.len()]
+                .iter()
+                .copied()
+                .map(Qubit::new)
+                .collect();
+            let mut expected = Circuit::from_qubits(qubits.clone()).unwrap();
+            if let Some(&first) = qubits.first() {
+                expected.rx(first, Parameter::from(0.7)).unwrap();
+                if qubits.len() > 1 {
+                    expected.cx(first, *qubits.last().unwrap()).unwrap();
+                }
+            }
+            expected.set_global_phase(Parameter::from(0.7));
+            let msb_order: Vec<usize> = qubits.iter().rev().map(|q| q.index()).collect();
+            assert_matrix_approx_eq(
+                matrix.as_ref(),
+                &circuit_to_matrix(&expected, Some(&msb_order)).unwrap(),
+                1e-12,
+            );
+            let operation = crate::circuit::Operation {
+                instruction: instruction.clone(),
+                qubits: qubits.into_iter().collect(),
+                params: params
+                    .into_iter()
+                    .map(crate::circuit::CircuitParam::Fixed)
+                    .collect(),
+                label: None,
+            };
+            assert_matrix_approx_eq(operation.matrix().unwrap().as_ref(), matrix.as_ref(), 1e-12);
+            if parameterized {
+                for invalid in [vec![], vec![f64::NAN], vec![f64::INFINITY], vec![0.7, 0.2]] {
+                    assert!(instruction.matrix(&invalid).is_none());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn unitary_instruction_matrix_keeps_explicit_matrix_order_and_precedence() {
+    use crate::circuit::symbolic_matrix::standard_gate_symbolic_matrix;
+
+    let mut body = Circuit::from_qubits(vec![Qubit::new(7), Qubit::new(2)]).unwrap();
+    body.cx(Qubit::new(2), Qubit::new(7)).unwrap();
+    let frozen = Arc::new(FrozenCircuit::new(body));
+    let numeric = StandardGate::CX.matrix(&[]).unwrap();
+    for with_circuit in [false, true] {
+        for symbolic in [false, true] {
+            let gate = UnitaryGate::new("explicit_cx", 2, 0);
+            let gate = if symbolic {
+                gate.with_symbolic_matrix(
+                    std::iter::empty::<String>(),
+                    standard_gate_symbolic_matrix(StandardGate::CX, &[]).unwrap(),
+                )
+            } else {
+                gate.with_matrix(numeric.clone().into_owned())
+            }
+            .unwrap();
+            let gate = if with_circuit {
+                gate.with_circuit(frozen.clone()).unwrap()
+            } else {
+                gate
+            };
+            let instruction = Instruction::UnitaryGate(Box::new(gate));
+            let matrix = instruction.matrix(&[]).unwrap();
+            assert_eq!(matrix.as_ref(), numeric.as_ref());
+            assert_eq!(matches!(matrix, Cow::Borrowed(_)), !symbolic);
+        }
+    }
+}
+
+#[test]
 fn circuit_gate_operation_matrix_respects_positional_qubits() {
     for order in [[0, 1], [1, 0], [7, 2]] {
         let mut body = Circuit::from_qubits(order.map(Qubit::new).to_vec()).unwrap();

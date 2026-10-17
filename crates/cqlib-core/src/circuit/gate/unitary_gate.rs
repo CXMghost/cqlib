@@ -286,9 +286,31 @@ impl UnitaryGate {
     }
 
     /// Resolves this gate into a concrete matrix for the supplied parameter values.
+    ///
+    /// Explicit matrices use MSB-first argument order. A circuit-only definition
+    /// retains its numeric-ID, LSB-first basis for compatibility with circuit
+    /// matrix construction. Use [`Instruction::matrix`](super::Instruction::matrix)
+    /// for a uniform MSB-first gate-local matrix.
     pub fn matrix_for_params(
         &self,
         params: &[f64],
+    ) -> Result<Cow<'_, Array2<Complex<f64>>>, CircuitError> {
+        self.resolve_matrix_for_params(params, false)
+    }
+
+    /// Resolves a gate-local matrix with the first argument at MSB, regardless
+    /// of whether the definition supplies a matrix or a circuit.
+    pub(crate) fn matrix_for_params_in_gate_order(
+        &self,
+        params: &[f64],
+    ) -> Result<Cow<'_, Array2<Complex<f64>>>, CircuitError> {
+        self.resolve_matrix_for_params(params, true)
+    }
+
+    fn resolve_matrix_for_params(
+        &self,
+        params: &[f64],
+        circuit_msb_first: bool,
     ) -> Result<Cow<'_, Array2<Complex<f64>>>, CircuitError> {
         self.validate_param_values(params)?;
 
@@ -323,11 +345,16 @@ impl UnitaryGate {
             let assigned = inner
                 .assign_parameters(&Some(bindings))
                 .map_err(|_| CircuitError::SymbolicParameterError)?;
-            let order: Vec<usize> = circuit
+            let mut order: Vec<usize> = circuit
                 .qubits_in_numeric_order()
                 .iter()
                 .map(|q| q.index())
                 .collect();
+            if circuit_msb_first {
+                // circuit_to_matrix takes an LSB-first order. Generate the
+                // instruction basis directly instead of permuting a dense matrix.
+                order.reverse();
+            }
             return circuit_to_matrix(&assigned, Some(&order)).map(Cow::Owned);
         }
 

@@ -318,12 +318,14 @@ impl Instruction {
 
     /// Computes the unitary matrix representation of the instruction.
     ///
+    /// The first qubit argument is the most-significant bit of the local
+    /// matrix for every supported gate, including circuit-backed UnitaryGate
+    /// definitions. Full circuit matrices instead use an LSB-first basis.
+    ///
     /// # Arguments
     ///
     /// * `params` - A slice of floating-point parameters (e.g., rotation angles).
-    ///   CircuitGate values bind positionally to its declared signature. Its
-    ///   first qubit argument is the most-significant bit of the local matrix,
-    ///   matching standard gates rather than the full circuit's LSB-first basis.
+    ///   CircuitGate values bind positionally to its declared signature.
     ///
     /// # Returns
     ///
@@ -334,7 +336,7 @@ impl Instruction {
         match self {
             Instruction::Standard(g) => g.matrix(params).ok(),
             Instruction::McGate(g) => g.matrix(params).ok(),
-            Instruction::UnitaryGate(g) => g.matrix_for_params(params).ok(),
+            Instruction::UnitaryGate(g) => g.matrix_for_params_in_gate_order(params).ok(),
             Instruction::CircuitGate(g) => g.matrix_for_params(params).ok().map(Cow::Owned),
             Instruction::Directive(_) => None,
             Instruction::ClassicalData(_) => None,
