@@ -37,6 +37,117 @@ fn assert_standard_gate_matches(gate: StandardGate, params: &[f64]) {
 }
 
 #[test]
+fn test_gphase_symbolic_gate_and_controls_match_scalar_formula() {
+    let theta = Parameter::symbol("theta");
+    for controls in 0..=2 {
+        let base =
+            standard_gate_symbolic_matrix(StandardGate::GPhase, std::slice::from_ref(&theta))
+                .unwrap();
+        assert_eq!(base.dim(), (1, 1));
+        let matrix = control_matrix(&base, controls);
+        let dim = 1 << controls;
+        assert_eq!(matrix.dim(), (dim, dim));
+        for angle in [0.0, 0.37, -0.51, PI] {
+            let bindings = HashMap::from([("theta", angle)]);
+            let actual = evaluate_symbolic_matrix(&matrix, &Some(bindings)).unwrap();
+            let mut expected = Array2::eye(dim);
+            expected[[dim - 1, dim - 1]] = Complex64::from_polar(1.0, angle);
+            assert_matrix_approx_eq(&actual, &expected, 1e-12);
+        }
+    }
+}
+
+#[test]
+fn test_gphase_symbolic_markers_accumulate_across_numeric_runs() {
+    for num_qubits in [0, 1, 3] {
+        let mut circuit = Circuit::new(num_qubits);
+        if num_qubits > 0 {
+            circuit.h(Qubit::new(0)).unwrap();
+        }
+        for phase in [Parameter::from(-0.21), Parameter::symbol("theta")] {
+            circuit
+                .append(
+                    Instruction::Standard(StandardGate::GPhase),
+                    [] as [Qubit; 0],
+                    [phase.into()],
+                    None,
+                )
+                .unwrap();
+        }
+        if num_qubits > 0 {
+            circuit
+                .rz(Qubit::new(0), Parameter::symbol("alpha"))
+                .unwrap();
+        }
+        circuit
+            .append(
+                Instruction::Standard(StandardGate::GPhase),
+                [] as [Qubit; 0],
+                [0.12.into()],
+                None,
+            )
+            .unwrap();
+        circuit.set_global_phase(Parameter::from(0.17));
+        let symbolic = circuit_to_symbolic_matrix(&circuit, None).unwrap();
+        let mut baseline = Circuit::new(num_qubits);
+        if num_qubits > 0 {
+            baseline.h(Qubit::new(0)).unwrap();
+            baseline.rz(Qubit::new(0), Parameter::from(0.23)).unwrap();
+        }
+        let baseline = circuit_to_matrix(&baseline, None).unwrap();
+        for theta in [0.0, 0.37, -0.51, PI] {
+            let bindings = HashMap::from([("theta", theta), ("alpha", 0.23)]);
+            let actual = evaluate_symbolic_matrix(&symbolic, &Some(bindings)).unwrap();
+            let expected = &baseline * Complex64::from_polar(1.0, theta - 0.21 + 0.12 + 0.17);
+            assert_matrix_approx_eq(&actual, &expected, 1e-12);
+        }
+    }
+}
+
+#[test]
+fn test_gphase_symbolic_controlled_circuit_with_constant_and_symbolic_params() {
+    for controls in [vec![], vec![2usize], vec![2, 0]] {
+        for phase in [Parameter::from(0.37), Parameter::symbol("theta")] {
+            let mut circuit = Circuit::new(3);
+            circuit.h(Qubit::new(1)).unwrap();
+            circuit
+                .multi_control(
+                    StandardGate::GPhase,
+                    controls.iter().map(|&q| Qubit::new(q as u32)),
+                    [] as [Qubit; 0],
+                    [phase.into()],
+                )
+                .unwrap();
+            for order in [[0, 1, 2], [2, 0, 1]] {
+                let spectator_bit = order.iter().position(|&q| q == 1).unwrap();
+                let mask = controls.iter().fold(0, |mask, control| {
+                    mask | (1 << order.iter().position(|q| q == control).unwrap())
+                });
+                let symbolic = circuit_to_symbolic_matrix(&circuit, Some(&order)).unwrap();
+                let bindings = HashMap::from([("theta", 0.37)]);
+                let actual = evaluate_symbolic_matrix(&symbolic, &Some(bindings)).unwrap();
+                let mut expected = Array2::zeros((8, 8));
+                for row in 0..8 {
+                    for col in 0..8 {
+                        if (row ^ col) & !(1 << spectator_bit) == 0 {
+                            let sign = if row & col & (1 << spectator_bit) != 0 {
+                                -1.0
+                            } else {
+                                1.0
+                            };
+                            let angle = if row & mask == mask { 0.37 } else { 0.0 };
+                            expected[[row, col]] =
+                                Complex64::from_polar(1.0, angle) * sign / std::f64::consts::SQRT_2;
+                        }
+                    }
+                }
+                assert_matrix_approx_eq(&actual, &expected, 1e-12);
+            }
+        }
+    }
+}
+
+#[test]
 fn test_fixed_standard_gate_matches_numeric_matrix() {
     let symbolic = standard_gate_symbolic_matrix(StandardGate::H, &[]).unwrap();
     let evaluated = evaluate_symbolic_matrix(&symbolic, &None).unwrap();

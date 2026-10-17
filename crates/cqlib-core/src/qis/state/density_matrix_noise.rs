@@ -261,36 +261,26 @@ impl DensityMatrixNoise {
                         let num_controls = mc_gate.num_ctrl_qubits();
                         let base_gate = mc_gate.base_gate();
 
-                        if num_controls == 1 {
-                            let c = qs[0];
-                            let t = qs[1];
-                            match base_gate {
-                                StandardGate::X => sim.apply_cx(c, t)?,
-                                StandardGate::Y => sim.apply_cy(c, t)?,
-                                StandardGate::Z => sim.apply_cz(c, t)?,
-                                StandardGate::RX => sim.apply_crx(c, t, params[0])?,
-                                StandardGate::RY => sim.apply_cry(c, t, params[0])?,
-                                StandardGate::RZ => sim.apply_crz(c, t, params[0])?,
-                                _ => {
-                                    let matrix = mc_gate.matrix(&params).map_err(|_| {
-                                        QisError::CircuitError(
-                                            crate::circuit::CircuitError::NoMatrixRepresentation,
-                                        )
-                                    })?;
-                                    sim.apply_unitary_gate(&qs, &matrix)?;
-                                    sim.apply_noise(*base_gate, &qs)?;
-                                }
+                        match (num_controls, *base_gate) {
+                            (0, StandardGate::GPhase) => {
+                                sim.apply_standard_gate_noise(*base_gate, &qs, &params)?
                             }
-                        } else if num_controls == 2 && *base_gate == StandardGate::X {
-                            sim.apply_ccx(qs[0], qs[1], qs[2])?;
-                        } else {
-                            let matrix = mc_gate.matrix(&params).map_err(|_| {
-                                QisError::CircuitError(
-                                    crate::circuit::CircuitError::NoMatrixRepresentation,
-                                )
-                            })?;
-                            sim.apply_unitary_gate(&qs, &matrix)?;
-                            sim.apply_noise(*base_gate, &qs)?;
+                            (1, StandardGate::X) => sim.apply_cx(qs[0], qs[1])?,
+                            (1, StandardGate::Y) => sim.apply_cy(qs[0], qs[1])?,
+                            (1, StandardGate::Z) => sim.apply_cz(qs[0], qs[1])?,
+                            (1, StandardGate::RX) => sim.apply_crx(qs[0], qs[1], params[0])?,
+                            (1, StandardGate::RY) => sim.apply_cry(qs[0], qs[1], params[0])?,
+                            (1, StandardGate::RZ) => sim.apply_crz(qs[0], qs[1], params[0])?,
+                            (2, StandardGate::X) => sim.apply_ccx(qs[0], qs[1], qs[2])?,
+                            _ => {
+                                let matrix = mc_gate.matrix(&params).map_err(|_| {
+                                    QisError::CircuitError(
+                                        crate::circuit::CircuitError::NoMatrixRepresentation,
+                                    )
+                                })?;
+                                sim.apply_unitary_gate(&qs, &matrix)?;
+                                sim.apply_noise(*base_gate, &qs)?;
+                            }
                         }
                     }
                     Instruction::UnitaryGate(u_gate) => {

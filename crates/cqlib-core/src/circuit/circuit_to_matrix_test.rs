@@ -937,6 +937,74 @@ fn test_global_phase_is_included_for_empty_circuit() {
 }
 
 #[test]
+fn test_gphase_markers_accumulate_with_circuit_global_phase() {
+    for num_qubits in [0, 1, 3] {
+        for theta in [0.0, 0.37, -0.51, PI] {
+            let mut circuit = Circuit::new(num_qubits);
+            if num_qubits > 0 {
+                circuit.h(Qubit::new(0)).unwrap();
+            }
+            let baseline = circuit_to_matrix(&circuit, None).unwrap();
+            for phase in [theta, -0.21] {
+                circuit
+                    .append(
+                        Instruction::Standard(StandardGate::GPhase),
+                        [] as [Qubit; 0],
+                        [phase.into()],
+                        None,
+                    )
+                    .unwrap();
+            }
+            circuit.set_global_phase(Parameter::from(0.17));
+            let expected = baseline * Complex64::from_polar(1.0, theta - 0.21 + 0.17);
+            let actual = circuit_to_matrix(&circuit, None).unwrap();
+            assert_matrix_approx_eq(&actual, &expected, 1e-12);
+        }
+    }
+}
+
+#[test]
+fn test_gphase_controlled_embedding_with_spectator_and_custom_order() {
+    for controls in [vec![], vec![2usize], vec![2, 0]] {
+        for theta in [0.0, 0.37, -0.51, PI] {
+            let mut circuit = Circuit::new(3);
+            circuit.h(Qubit::new(1)).unwrap();
+            circuit
+                .multi_control(
+                    StandardGate::GPhase,
+                    controls.iter().map(|&q| Qubit::new(q as u32)),
+                    [] as [Qubit; 0],
+                    [theta.into()],
+                )
+                .unwrap();
+            for order in [[0, 1, 2], [2, 0, 1]] {
+                let spectator_bit = order.iter().position(|&q| q == 1).unwrap();
+                let mask = controls.iter().fold(0, |mask, control| {
+                    mask | (1 << order.iter().position(|q| q == control).unwrap())
+                });
+                let mut expected = Array2::zeros((8, 8));
+                for row in 0..8 {
+                    for col in 0..8 {
+                        if (row ^ col) & !(1 << spectator_bit) == 0 {
+                            let sign = if row & col & (1 << spectator_bit) != 0 {
+                                -1.0
+                            } else {
+                                1.0
+                            };
+                            let phase = if row & mask == mask { theta } else { 0.0 };
+                            expected[[row, col]] =
+                                Complex64::from_polar(1.0, phase) * sign / SQRT_2;
+                        }
+                    }
+                }
+                let actual = circuit_to_matrix(&circuit, Some(&order)).unwrap();
+                assert_matrix_approx_eq(&actual, &expected, 1e-12);
+            }
+        }
+    }
+}
+
+#[test]
 fn test_global_phase_is_included_with_gate() {
     let mut circuit = Circuit::new(1);
     circuit.x(Qubit::new(0)).unwrap();

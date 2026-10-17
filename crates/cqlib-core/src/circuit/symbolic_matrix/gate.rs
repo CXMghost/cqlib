@@ -155,10 +155,7 @@ pub fn standard_gate_symbolic_matrix(
             [o.clone(), z.clone()],
             [z, SymbolicComplex::exp_i(params[0].clone())]
         ],
-        StandardGate::GPhase => {
-            let phase = SymbolicComplex::exp_i(params[0].clone());
-            ndarray::array![[phase.clone(), z.clone()], [z, phase]]
-        }
+        StandardGate::GPhase => ndarray::array![[SymbolicComplex::exp_i(params[0].clone())]],
         StandardGate::RXX => {
             let c = cos_half(&params[0]);
             let s = neg_i_times(sin_half(&params[0]));

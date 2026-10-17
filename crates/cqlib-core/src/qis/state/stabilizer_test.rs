@@ -1434,3 +1434,58 @@ fn test_apply_circuit_rejects_classical_control_flow() {
     let error = StabilizerState::run_circuit(&c).unwrap_err();
     assert!(matches!(error, QisError::UnsupportedOperation(_)));
 }
+
+#[test]
+fn controlled_gphase_returns_unsupported_without_panicking() {
+    use crate::circuit::{Circuit, StandardGate};
+    for theta in [0.0, 0.37, std::f64::consts::FRAC_PI_2] {
+        let mut circuit = Circuit::from_qubits(vec![Qubit::new(12)]).unwrap();
+        circuit
+            .multi_control(
+                StandardGate::GPhase,
+                [Qubit::new(12)],
+                Vec::<Qubit>::new(),
+                [theta.into()],
+            )
+            .unwrap();
+        let mut state = StabilizerState::new(1);
+        for result in [
+            StabilizerState::from_circuit(&circuit).map(|_| ()),
+            state.apply_circuit(&circuit),
+            StabilizerState::run_circuit(&circuit).map(|_| ()),
+        ] {
+            assert!(
+                matches!(result, Err(QisError::UnsupportedOperation(ref message))
+                if message.contains("Controlled-GPhase") && message.contains("not supported")),
+                "unexpected result: {result:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn controlled_paulis_match_standard_stabilizer_execution() {
+    use crate::circuit::{Circuit, StandardGate};
+    for gate in [StandardGate::X, StandardGate::Y, StandardGate::Z] {
+        let mut circuit = Circuit::new(2);
+        circuit.h(Qubit::new(0)).unwrap();
+        circuit.h(Qubit::new(1)).unwrap();
+        let mut expected = StabilizerState::from_circuit(&circuit).unwrap();
+        match gate {
+            StandardGate::X => expected.apply_cx(0, 1).unwrap(),
+            StandardGate::Y => expected.apply_cy(0, 1).unwrap(),
+            StandardGate::Z => expected.apply_cz(0, 1).unwrap(),
+            _ => unreachable!(),
+        }
+        circuit
+            .multi_control(gate, [Qubit::new(0)], [Qubit::new(1)], [])
+            .unwrap();
+        for actual in [
+            StabilizerState::from_circuit(&circuit).unwrap(),
+            StabilizerState::run_circuit(&circuit).unwrap().state,
+        ] {
+            assert_eq!(&*actual.tableau, &*expected.tableau);
+            assert_eq!(actual.phases, expected.phases);
+        }
+    }
+}

@@ -576,44 +576,31 @@ impl Statevector {
                     let num_controls = mc_gate.num_ctrl_qubits();
                     let base_gate = mc_gate.base_gate();
 
-                    if num_controls == 1 {
-                        // Single-controlled gate
-                        let control = qubit_indices[0];
-                        let target = qubit_indices[1];
-                        match base_gate {
-                            StandardGate::X => sv.apply_cx(control, target)?,
-                            StandardGate::Y => sv.apply_cy(control, target)?,
-                            StandardGate::Z => sv.apply_cz(control, target)?,
-                            StandardGate::RX => {
-                                let theta = params[0];
-                                sv.apply_crx(control, target, theta)?;
-                            }
-                            StandardGate::RY => {
-                                let theta = params[0];
-                                sv.apply_cry(control, target, theta)?;
-                            }
-                            StandardGate::RZ => {
-                                let theta = params[0];
-                                sv.apply_crz(control, target, theta)?;
-                            }
-                            _ => {
-                                let matrix = mc_gate.matrix(&params).map_err(|_| {
-                                    QisError::CircuitError(CircuitError::NoMatrixRepresentation)
-                                })?;
-                                sv.apply_unitary_gate(&qubit_indices, &matrix)?;
-                            }
+                    match (num_controls, *base_gate) {
+                        (0, StandardGate::GPhase) => {
+                            sv.apply_standard_gate(*base_gate, &qubit_indices, &params)?
                         }
-                    } else if num_controls == 2 && *base_gate == StandardGate::X {
-                        // Toffoli gate
-                        let c0 = qubit_indices[0];
-                        let c1 = qubit_indices[1];
-                        let target = qubit_indices[2];
-                        sv.apply_ccx(c0, c1, target)?;
-                    } else {
-                        let matrix = mc_gate.matrix(&params).map_err(|_| {
-                            QisError::CircuitError(CircuitError::NoMatrixRepresentation)
-                        })?;
-                        sv.apply_unitary_gate(&qubit_indices, &matrix)?;
+                        (1, StandardGate::X) => sv.apply_cx(qubit_indices[0], qubit_indices[1])?,
+                        (1, StandardGate::Y) => sv.apply_cy(qubit_indices[0], qubit_indices[1])?,
+                        (1, StandardGate::Z) => sv.apply_cz(qubit_indices[0], qubit_indices[1])?,
+                        (1, StandardGate::RX) => {
+                            sv.apply_crx(qubit_indices[0], qubit_indices[1], params[0])?
+                        }
+                        (1, StandardGate::RY) => {
+                            sv.apply_cry(qubit_indices[0], qubit_indices[1], params[0])?
+                        }
+                        (1, StandardGate::RZ) => {
+                            sv.apply_crz(qubit_indices[0], qubit_indices[1], params[0])?
+                        }
+                        (2, StandardGate::X) => {
+                            sv.apply_ccx(qubit_indices[0], qubit_indices[1], qubit_indices[2])?
+                        }
+                        _ => {
+                            let matrix = mc_gate.matrix(&params).map_err(|_| {
+                                QisError::CircuitError(CircuitError::NoMatrixRepresentation)
+                            })?;
+                            sv.apply_unitary_gate(&qubit_indices, &matrix)?;
+                        }
                     }
                 }
                 Instruction::UnitaryGate(u_gate) => {

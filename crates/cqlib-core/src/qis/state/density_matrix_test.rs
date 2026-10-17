@@ -1240,3 +1240,123 @@ fn hermiticity_rejects_nonfinite_entries() {
         }
     }
 }
+
+#[test]
+fn controlled_gphase_circuit_evolution() {
+    for ids in [[0, 1, 2], [12, 5, 31]] {
+        let qubits = ids.map(Qubit::new);
+        for controls in [
+            vec![qubits[2]],
+            vec![qubits[2], qubits[0]],
+            vec![qubits[0], qubits[2]],
+        ] {
+            for theta in [0.0, 0.37, -0.51, PI] {
+                let mut preparation = Circuit::from_qubits(qubits.to_vec()).unwrap();
+                for qubit in qubits {
+                    preparation.h(qubit).unwrap();
+                }
+                preparation.s(qubits[1]).unwrap();
+                let mut phase = Circuit::from_qubits(qubits.to_vec()).unwrap();
+                phase
+                    .multi_control(
+                        StandardGate::GPhase,
+                        controls.clone(),
+                        Vec::<Qubit>::new(),
+                        [theta.into()],
+                    )
+                    .unwrap();
+                let mut circuit = preparation.clone();
+                circuit
+                    .multi_control(
+                        StandardGate::GPhase,
+                        controls.clone(),
+                        Vec::<Qubit>::new(),
+                        [theta.into()],
+                    )
+                    .unwrap();
+                let mask = controls.iter().fold(0usize, |mask, q| {
+                    mask | (1 << qubits.iter().position(|candidate| candidate == q).unwrap())
+                });
+                let expected: Vec<Complex64> = (0..8)
+                    .map(|index| {
+                        let amplitude = if index & 2 == 0 {
+                            Complex64::new(1.0, 0.0)
+                        } else {
+                            Complex64::new(0.0, 1.0)
+                        } / 8.0_f64.sqrt();
+                        if index & mask == mask {
+                            amplitude * Complex64::from_polar(1.0, theta)
+                        } else {
+                            amplitude
+                        }
+                    })
+                    .collect();
+                let expected_data = expected
+                    .iter()
+                    .flat_map(|a| expected.iter().map(move |b| a * b.conj()))
+                    .collect::<Vec<_>>();
+                let actual = DensityMatrix::from_circuit(&circuit).unwrap();
+                let mut incremental = DensityMatrix::new(3);
+                incremental.apply_circuit(&preparation).unwrap();
+                incremental.apply_circuit(&phase).unwrap();
+                for values in [actual.data(), incremental.data()] {
+                    for (actual, expected) in values.iter().zip(&expected_data) {
+                        assert!(
+                            (actual - expected).norm() < 1e-12,
+                            "{actual:?} != {expected:?}"
+                        );
+                    }
+                }
+                let mut inverse = Circuit::from_qubits(qubits.to_vec()).unwrap();
+                inverse
+                    .multi_control(
+                        StandardGate::GPhase,
+                        controls.clone(),
+                        Vec::<Qubit>::new(),
+                        [(-theta).into()],
+                    )
+                    .unwrap();
+                incremental.apply_circuit(&inverse).unwrap();
+                let baseline = DensityMatrix::from_circuit(&preparation).unwrap();
+                for (actual, expected) in incremental.data().iter().zip(baseline.data()) {
+                    assert!((actual - expected).norm() < 1e-12);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn zero_control_gphase_circuit_evolution() {
+    use crate::circuit::gate::{Instruction, MCGate};
+    for num_qubits in [0, 1, 3] {
+        for theta in [0.0, 0.37, -0.51, PI] {
+            let mut circuit = Circuit::new(num_qubits);
+            if num_qubits > 0 {
+                circuit.h(Qubit::new(0)).unwrap();
+            }
+            circuit
+                .append(
+                    Instruction::McGate(Box::new(MCGate::new(0, StandardGate::GPhase))),
+                    Vec::<Qubit>::new(),
+                    [theta.into()],
+                    None,
+                )
+                .unwrap();
+            let actual = DensityMatrix::from_circuit(&circuit).unwrap();
+            let mut amplitudes = vec![Complex64::new(0.0, 0.0); 1 << num_qubits];
+            amplitudes[0] = Complex64::from_polar(1.0, theta);
+            if num_qubits > 0 {
+                amplitudes[0] /= 2.0_f64.sqrt();
+                amplitudes[1] = amplitudes[0];
+            }
+            let expected = amplitudes
+                .iter()
+                .flat_map(|a| amplitudes.iter().map(move |b| a * b.conj()))
+                .collect::<Vec<_>>();
+            for (actual, expected) in actual.data().iter().zip(&expected) {
+                assert!((actual - expected).norm() < 1e-12);
+            }
+        }
+    }
+}
