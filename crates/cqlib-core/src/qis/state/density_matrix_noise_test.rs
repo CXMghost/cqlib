@@ -20,6 +20,37 @@ use num_complex::Complex64;
 use std::f64::consts::PI;
 
 #[test]
+fn duplicate_targets_leave_noisy_density_matrix_unchanged() {
+    let mut model = NoiseModel::new();
+    model
+        .add_two_qubit_error(
+            StandardGate::CX,
+            Qubit::new(0),
+            Qubit::new(2),
+            TwoQubitNoise::CorrelatedPauli {
+                op_q0: Pauli::X,
+                op_q1: Pauli::X,
+                p: 0.2,
+            },
+        )
+        .unwrap();
+    let mut initial = DensityMatrixNoise::new(3, Some(model));
+    initial.apply_h(0).unwrap();
+    initial.apply_s(0).unwrap();
+    for gate in [StandardGate::CX, StandardGate::CZ] {
+        for q in 0..3 {
+            let mut sim = initial.clone();
+            assert!(matches!(
+                sim.apply_standard_gate_noise(gate, &[q, q], &[]),
+                Err(QisError::InvalidParameterValue(msg))
+                    if msg.contains(&format!("Duplicate qubit index {q} "))
+            ));
+            assert_eq!(sim.state.data(), initial.state.data());
+        }
+    }
+}
+
+#[test]
 fn test_bit_flip_noise() {
     let mut noise_model = NoiseModel::new();
     noise_model

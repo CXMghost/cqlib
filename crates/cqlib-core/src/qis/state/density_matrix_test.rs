@@ -409,6 +409,98 @@ fn test_zeros_and_add_assign() {
 }
 
 #[test]
+fn duplicate_two_qubit_targets_leave_density_matrix_unchanged() {
+    let mut initial = DensityMatrix::new(3);
+    initial.apply_h(0).unwrap();
+    initial.apply_ry(1, 0.37).unwrap();
+    initial.apply_s(0).unwrap();
+    for gate in [
+        StandardGate::CX,
+        StandardGate::CZ,
+        StandardGate::CY,
+        StandardGate::SWAP,
+        StandardGate::RXX,
+        StandardGate::RYY,
+        StandardGate::RZZ,
+        StandardGate::RZX,
+        StandardGate::CRX,
+        StandardGate::CRY,
+        StandardGate::CRZ,
+        StandardGate::FSIM,
+    ] {
+        for q in 0..3 {
+            let mut dm = initial.clone();
+            let result = dm.apply_standard_gate(gate, &[q, q], &vec![0.37; gate.num_params()]);
+            assert!(matches!(result, Err(QisError::InvalidParameterValue(msg))
+                if msg.contains(&format!("Duplicate qubit index {q} "))));
+            assert_eq!(dm.data(), initial.data(), "{gate:?} on [{q}, {q}]");
+        }
+    }
+    for targets in [[0, 0, 2], [0, 2, 0], [2, 0, 0]] {
+        let mut dm = initial.clone();
+        assert!(matches!(
+            dm.apply_ccx(targets[0], targets[1], targets[2]),
+            Err(QisError::InvalidParameterValue(msg)) if msg.contains("Duplicate qubit index 0 ")
+        ));
+        assert_eq!(dm.data(), initial.data());
+    }
+}
+
+#[test]
+fn duplicate_custom_gate_targets_leave_density_matrix_unchanged() {
+    let mut dm = DensityMatrix::new(3);
+    dm.apply_h(0).unwrap();
+    dm.apply_s(0).unwrap();
+    let before = dm.data().to_vec();
+    let matrix = StandardGate::CX.matrix(&[]).unwrap();
+    let matrix = std::array::from_fn(|r| std::array::from_fn(|c| matrix[[r, c]]));
+    for q in 0..3 {
+        assert!(matches!(
+            dm.apply_two_qubit_gate(q, q, matrix),
+            Err(QisError::InvalidParameterValue(msg))
+                if msg.contains(&format!("Duplicate qubit index {q} "))
+        ));
+        assert_eq!(dm.data(), before);
+    }
+}
+
+#[test]
+fn duplicate_kraus_targets_leave_density_matrix_unchanged() {
+    let amplitudes: Vec<_> = (1..=8)
+        .map(|i| Complex64::new(i as f64 / 204.0_f64.sqrt(), 0.0))
+        .collect();
+    let initial = DensityMatrix::from_state(3, amplitudes).unwrap();
+    for (targets, duplicate) in [
+        (&[0, 0][..], 0),
+        (&[1, 1][..], 1),
+        (&[2, 2][..], 2),
+        (&[0, 2, 0][..], 0),
+        (&[0, 0, 2][..], 0),
+        (&[2, 0, 0][..], 0),
+    ] {
+        let dim = 1 << targets.len();
+        let norm: f64 = (1..=dim).map(|i| (i * i) as f64).sum();
+        let operator = (0..dim)
+            .flat_map(|r| {
+                (0..dim).map(move |c| {
+                    Complex64::new(
+                        if r == c { 1.0 } else { 0.0 } - 2.0 * ((r + 1) * (c + 1)) as f64 / norm,
+                        0.0,
+                    )
+                })
+            })
+            .collect();
+        let mut dm = initial.clone();
+        assert!(matches!(
+            dm.apply_kraus(&[operator], targets),
+            Err(QisError::InvalidParameterValue(msg))
+                if msg.contains(&format!("Duplicate qubit index {duplicate} "))
+        ));
+        assert_eq!(dm.data(), initial.data());
+    }
+}
+
+#[test]
 fn test_single_qubit_gates() {
     let mut dm = DensityMatrix::new(1);
 

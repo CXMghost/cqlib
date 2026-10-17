@@ -151,7 +151,7 @@ impl DensityMatrix {
         Ok(())
     }
 
-    /// Validates that two qubit indices are within bounds.
+    /// Validates that two qubit indices are within bounds and distinct.
     #[inline]
     fn validate_two_qubits(&self, q0: usize, q1: usize) -> Result<(), QisError> {
         if self.num_qubits == 0 {
@@ -171,10 +171,15 @@ impl DensityMatrix {
                 max: self.num_qubits.saturating_sub(1),
             });
         }
+        if q0 == q1 {
+            return Err(QisError::InvalidParameterValue(format!(
+                "Duplicate qubit index {q0} in gate operation"
+            )));
+        }
         Ok(())
     }
 
-    /// Validates that all qubit indices in a slice are within bounds.
+    /// Validates that all qubit indices in a slice are within bounds and distinct.
     #[inline]
     fn validate_qubits(&self, qubits: &[usize]) -> Result<(), QisError> {
         if self.num_qubits == 0 {
@@ -188,6 +193,13 @@ impl DensityMatrix {
                     index: q,
                     max: self.num_qubits.saturating_sub(1),
                 });
+            }
+        }
+        for (i, &q) in qubits.iter().enumerate() {
+            if qubits[..i].contains(&q) {
+                return Err(QisError::InvalidParameterValue(format!(
+                    "Duplicate qubit index {q} in gate operation"
+                )));
             }
         }
         Ok(())
