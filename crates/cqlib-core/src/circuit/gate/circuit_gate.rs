@@ -17,9 +17,13 @@
 //! This enables hierarchical circuit construction and custom composite gates.
 
 use crate::circuit::circuit_impl::Circuit;
+use crate::circuit::circuit_to_matrix;
 use crate::circuit::error::CircuitError;
 use crate::circuit::symbolic_matrix::{SymbolicMatrix, circuit_to_symbolic_matrix};
 use indexmap::IndexSet;
+use ndarray::Array2;
+use num_complex::Complex64;
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 /// An immutable, frozen circuit for use in gate definitions.
@@ -350,6 +354,40 @@ impl CircuitGate {
         self.num_params
     }
 
+    /// Resolves a numeric gate-local matrix, with the first positional
+    /// argument as the most-significant bit, like a standard gate matrix.
+    /// This differs from `symbolic_matrix`'s storage-order, little-endian basis.
+    pub(crate) fn matrix_for_params(
+        &self,
+        params: &[f64],
+    ) -> Result<Array2<Complex64>, CircuitError> {
+        if params.len() != self.signature_params.len() {
+            return Err(CircuitError::ParameterCountMismatch {
+                expected: self.signature_params.len(),
+                actual: params.len(),
+            });
+        }
+        for (index, &value) in params.iter().enumerate() {
+            if !value.is_finite() {
+                return Err(CircuitError::InvalidParameterValue(index, value));
+            }
+        }
+        let bindings: HashMap<&str, f64> = self
+            .signature_params
+            .iter()
+            .map(String::as_str)
+            .zip(params.iter().copied())
+            .collect();
+        let assigned = self
+            .circuit
+            .circuit
+            .assign_parameters(&Some(bindings))
+            .map_err(|_| CircuitError::SymbolicParameterError)?;
+        // circuit_to_matrix takes LSB-first ordering; gate arguments are MSB-first.
+        let order: Vec<usize> = assigned.qubits().iter().rev().map(|q| q.index()).collect();
+        circuit_to_matrix(&assigned, Some(&order))
+    }
+
     /// Returns a clone of the internal frozen circuit.
     ///
     /// # Examples
@@ -433,6 +471,82 @@ impl CircuitGate {
 mod tests {
     use super::*;
     use crate::circuit::{Circuit, Parameter, Qubit};
+
+    #[test]
+    fn numeric_matrix_binds_declared_signature_and_global_phase_without_mutation() {
+        let mut circuit = Circuit::from_qubits(vec![Qubit::new(7)]).unwrap();
+        let theta = Parameter::symbol("theta");
+        let phi = Parameter::symbol("phi");
+        circuit.rx(Qubit::new(7), theta.clone()).unwrap();
+        circuit.rz(Qubit::new(7), phi.clone()).unwrap();
+        circuit.set_global_phase(theta + phi / Parameter::from(2.0));
+        let gate = CircuitGate::with_signature(
+            "declared",
+            FrozenCircuit::new(circuit),
+            ["unused".to_string(), "phi".to_string(), "theta".to_string()],
+        )
+        .unwrap();
+        let original = gate.clone();
+        for (theta, phi) in [(0.37_f64, -0.21_f64), (-0.61, 0.42), (0.37, -0.21)] {
+            let matrix = gate.matrix_for_params(&[12.0, phi, theta]).unwrap();
+            for row in 0..2 {
+                let phase = theta + phi / 2.0 + if row == 0 { -phi / 2.0 } else { phi / 2.0 };
+                for col in 0..2 {
+                    let rx = if row == col {
+                        Complex64::new((theta / 2.0).cos(), 0.0)
+                    } else {
+                        Complex64::new(0.0, -(theta / 2.0).sin())
+                    };
+                    assert!(
+                        (matrix[[row, col]] - Complex64::from_polar(1.0, phase) * rx).norm()
+                            < 1e-12
+                    );
+                }
+            }
+            assert_eq!(gate, original);
+            assert_eq!(gate.used_symbols().len(), 2);
+        }
+    }
+
+    #[test]
+    fn numeric_matrix_rejects_invalid_arguments_and_nonunitary_definitions() {
+        let gate = CircuitGate::with_signature(
+            "unused",
+            FrozenCircuit::new(Circuit::new(1)),
+            ["unused".to_string()],
+        )
+        .unwrap();
+        for params in [vec![], vec![0.1, 0.2]] {
+            assert!(matches!(
+                gate.matrix_for_params(&params),
+                Err(CircuitError::ParameterCountMismatch { expected: 1, .. })
+            ));
+        }
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(matches!(
+                gate.matrix_for_params(&[value]),
+                Err(CircuitError::InvalidParameterValue(0, _))
+            ));
+        }
+        for directive in [
+            crate::circuit::Directive::Measure,
+            crate::circuit::Directive::Reset,
+        ] {
+            let mut body = Circuit::new(1);
+            body.append(
+                crate::circuit::Instruction::Directive(directive),
+                [Qubit::new(0)],
+                [],
+                None,
+            )
+            .unwrap();
+            let gate = CircuitGate::new("nonunitary", FrozenCircuit::new(body)).unwrap();
+            assert!(matches!(
+                gate.matrix_for_params(&[]),
+                Err(CircuitError::NoMatrixRepresentation)
+            ));
+        }
+    }
 
     #[test]
     fn signature_params_are_distinct_from_used_symbols() {

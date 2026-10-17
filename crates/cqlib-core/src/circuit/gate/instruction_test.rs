@@ -13,8 +13,57 @@
 use super::*;
 
 use crate::circuit::{
-    Circuit, CircuitId, ClassicalExpr, ClassicalType, ClassicalValue, ClassicalVar,
+    Circuit, CircuitId, ClassicalExpr, ClassicalType, ClassicalValue, ClassicalVar, Qubit,
 };
+
+#[test]
+fn circuit_gate_operation_matrix_respects_positional_qubits() {
+    for order in [[0, 1], [1, 0], [7, 2]] {
+        let mut body = Circuit::from_qubits(order.map(Qubit::new).to_vec()).unwrap();
+        body.x(Qubit::new(order[0])).unwrap();
+        let instruction = body.to_gate("first_x").unwrap();
+        let matrix = instruction.matrix(&[]).unwrap();
+        // First argument is the MSB of a gate-local matrix: X tensor I.
+        for row in 0..4 {
+            for col in 0..4 {
+                let expected = if row == (col ^ 2) { 1.0 } else { 0.0 };
+                assert_eq!(matrix[[row, col]], Complex64::new(expected, 0.0));
+            }
+        }
+    }
+}
+
+#[test]
+fn circuit_gate_operation_matrix_binds_numeric_arguments() {
+    let mut body = Circuit::from_qubits(vec![Qubit::new(7)]).unwrap();
+    body.rx(Qubit::new(7), Parameter::symbol("theta")).unwrap();
+    let instruction = body.to_gate("rx").unwrap();
+    for angle in [0.37_f64, -0.61] {
+        let matrix = instruction.matrix(&[angle]).unwrap();
+        let mut operation = crate::circuit::Operation {
+            instruction: instruction.clone(),
+            qubits: smallvec::smallvec![Qubit::new(7)],
+            params: smallvec::smallvec![crate::circuit::CircuitParam::Fixed(angle)],
+            label: None,
+        };
+        assert_eq!(operation.matrix().unwrap().as_ref(), matrix.as_ref());
+        operation.params[0] = crate::circuit::CircuitParam::Index(0);
+        assert!(matches!(
+            operation.matrix(),
+            Err(crate::circuit::CircuitError::SymbolicParameterError)
+        ));
+        for row in 0..2 {
+            for col in 0..2 {
+                let expected = if row == col {
+                    Complex64::new((angle / 2.0).cos(), 0.0)
+                } else {
+                    Complex64::new(0.0, -(angle / 2.0).sin())
+                };
+                assert!((matrix[[row, col]] - expected).norm() < 1e-12);
+            }
+        }
+    }
+}
 
 #[test]
 fn standard_gate_query_distinguishes_instruction_kinds() {

@@ -165,11 +165,98 @@ static void test_extended_gates(void) {
     circuit_free(circuit);
 }
 
+static void test_circuit_gate_operation_matrix(void) {
+    const uint32_t orders[][2] = {{0, 1}, {1, 0}, {7, 2}};
+    const uint32_t targets[] = {0, 1};
+    for (size_t order = 0; order < 3; ++order) {
+        for (int parameterized = 0; parameterized < 2; ++parameterized) {
+            CCircuit* body = circuit_new(0);
+            assert(body != NULL);
+            assert(circuit_add_qubits(body, orders[order], 2) == 0);
+            /* Build on dense ids, then map into the explicit storage order. */
+            CCircuit* definition = circuit_new(2);
+            assert(definition != NULL);
+            CParameter* theta = param_parse("theta");
+            assert(theta != NULL);
+            if (parameterized) {
+                assert(circuit_rx_param(definition, 0, theta) == 0);
+            } else {
+                assert(circuit_x(definition, 0) == 0);
+            }
+            assert(circuit_compose(body, definition, orders[order], 2) == 0);
+            circuit_free(definition);
+            assert(circuit_set_global_phase(body, 0.13) == 0);
+            CCircuitGate* gate = circuit_to_gate(body, "first_gate");
+            assert(gate != NULL);
+            for (size_t application = 0; application < 2; ++application) {
+                double angle = application == 0 ? 0.37 : -0.61;
+                CParameter* argument = param_from_double(angle);
+                const CParameter* arguments[] = {argument};
+                assert(argument != NULL);
+                CCircuit* circuit = circuit_new(2);
+                assert(circuit != NULL);
+                assert(circuit_circuit_gate(circuit, gate, targets, 2,
+                                            parameterized ? arguments : NULL,
+                                            parameterized ? 1 : 0) == 0);
+                /* CParameter arguments are stored as parameter-table indices.
+                 * Resolve them in the owning circuit before extracting the raw
+                 * DAG Operation, which has no access to that parameter table.
+                 * The gate definition still contains theta; matrix() must bind it. */
+                CCircuit* resolved = circuit_assign_params(circuit, "");
+                assert(resolved != NULL && circuit_num_parameters(resolved) == 0);
+                circuit_free(circuit);
+                circuit = resolved;
+                CCircuitDag* dag = circuit_dag_from_circuit(circuit);
+                assert(dag != NULL && circuit_dag_op_nodes_len(dag) == 1);
+                uint32_t node;
+                assert(circuit_dag_op_nodes(dag, &node, 1) == 0);
+                COperation* operation = circuit_dag_operation(dag, node);
+                assert(operation != NULL);
+                size_t rows = 0, cols = 0;
+                assert(operation_matrix_len(operation) == 16);
+                assert(operation_matrix_dims(operation, &rows, &cols) == 0);
+                assert(rows == 4 && cols == 4);
+                double local[32], full[32];
+                assert(operation_matrix(operation, local, 32) == 16);
+                assert(circuit_to_matrix(circuit, NULL, 0, full, 32) == 16);
+                for (size_t row = 0; row < 4; ++row) {
+                    for (size_t col = 0; col < 4; ++col) {
+                        for (int local_basis = 0; local_basis < 2; ++local_basis) {
+                            size_t flip = local_basis ? 2 : 1;
+                            double re = 0, im = 0;
+                            if (parameterized) {
+                                if (row == col) re = cos(angle / 2);
+                                if (row == (col ^ flip)) im = -sin(angle / 2);
+                            } else if (row == (col ^ flip)) {
+                                re = 1;
+                            }
+                            double expected_re = re * cos(0.13) - im * sin(0.13);
+                            double expected_im = re * sin(0.13) + im * cos(0.13);
+                            const double* matrix = local_basis ? local : full;
+                            size_t index = 2 * (row * 4 + col);
+                            assert(fabs(matrix[index] - expected_re) < 1e-12);
+                            assert(fabs(matrix[index + 1] - expected_im) < 1e-12);
+                        }
+                    }
+                }
+                operation_free(operation);
+                circuit_dag_free(dag);
+                circuit_free(circuit);
+                param_free(argument);
+            }
+            circuit_gate_free(gate);
+            param_free(theta);
+            circuit_free(body);
+        }
+    }
+}
+
 int main(void) {
     test_basic_circuit();
     test_errors();
     test_symbolic_parameters();
     test_extended_gates();
+    test_circuit_gate_operation_matrix();
     printf("binding-c circuit tests passed\n");
     return 0;
 }
