@@ -28,7 +28,7 @@ else()
 endif()
 
 foreach(kind static shared)
-    foreach(suite circuit qis_algebra)
+    foreach(suite circuit qis_algebra density_matrix_targets)
         set(test_target test_${suite}_${kind})
         add_executable(${test_target} test_${suite}.c)
         set_target_properties(${test_target} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES)
