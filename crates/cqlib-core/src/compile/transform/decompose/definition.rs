@@ -172,6 +172,7 @@ impl<'a> DefinitionExpander<'a> {
                 self.expand_definition(
                     gate.name(),
                     definition.circuit(),
+                    &definition.circuit().qubits(),
                     gate.num_qubits(),
                     gate.num_params(),
                     operation,
@@ -189,6 +190,7 @@ impl<'a> DefinitionExpander<'a> {
                     self.expand_definition(
                         gate.label(),
                         definition.circuit(),
+                        &definition.qubits_in_numeric_order(),
                         gate.num_qubits() as usize,
                         gate.num_params() as usize,
                         operation,
@@ -240,6 +242,7 @@ impl<'a> DefinitionExpander<'a> {
         &mut self,
         name: &str,
         definition: &Circuit,
+        definition_qubits: &[Qubit],
         expected_qubits: usize,
         expected_params: usize,
         operation: &Operation,
@@ -289,7 +292,6 @@ impl<'a> DefinitionExpander<'a> {
             next_symbol_bindings.insert(symbol.clone(), value);
         }
 
-        let definition_qubits = definition.qubits();
         if definition_qubits.len() != expected_qubits {
             return Err(CompilerError::InvariantViolation(format!(
                 "definition '{name}' signature has {expected_qubits} qubits but backing circuit has {} qubits",

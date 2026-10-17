@@ -16,6 +16,7 @@
 //! quantum circuits to be used as reusable gate components within other circuits.
 //! This enables hierarchical circuit construction and custom composite gates.
 
+use crate::circuit::Qubit;
 use crate::circuit::circuit_impl::Circuit;
 use crate::circuit::circuit_to_matrix;
 use crate::circuit::error::CircuitError;
@@ -101,6 +102,16 @@ impl FrozenCircuit {
         &self.used_symbols
     }
 
+    /// The default matrix order, from least to most significant bit.
+    ///
+    /// Circuit-backed UnitaryGate definitions map this order positionally to
+    /// the caller's qubits. CircuitGate instead uses circuit storage order.
+    pub(crate) fn qubits_in_numeric_order(&self) -> Vec<Qubit> {
+        let mut qubits = self.circuit.qubits();
+        qubits.sort_unstable();
+        qubits
+    }
+
     /// Returns the cached symbolic matrix for this frozen circuit.
     ///
     /// The matrix is computed in the circuit's default qubit order on the
@@ -111,7 +122,12 @@ impl FrozenCircuit {
             return Ok(matrix.clone());
         }
 
-        let matrix = Arc::new(circuit_to_symbolic_matrix(&self.circuit, None)?);
+        let order: Vec<usize> = self
+            .qubits_in_numeric_order()
+            .iter()
+            .map(|q| q.index())
+            .collect();
+        let matrix = Arc::new(circuit_to_symbolic_matrix(&self.circuit, Some(&order))?);
         let _ = self.symbolic_matrix_cache.set(matrix.clone());
         Ok(self.symbolic_matrix_cache.get().cloned().unwrap_or(matrix))
     }

@@ -550,7 +550,7 @@ fn dump_unitary_gate_definition(
         .collect();
     writeln!(output, "gate {label} {} {{", qubits.join(","))?;
     let mut qubit_map = HashMap::new();
-    for (index, qubit) in frozen.circuit.qubits().iter().copied().enumerate() {
+    for (index, qubit) in frozen.qubits_in_numeric_order().into_iter().enumerate() {
         qubit_map.insert(qubit, format!("q{index}"));
     }
     dump_global_phase(&frozen.circuit, output, &HashMap::new())?;

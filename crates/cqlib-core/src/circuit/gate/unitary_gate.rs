@@ -323,7 +323,12 @@ impl UnitaryGate {
             let assigned = inner
                 .assign_parameters(&Some(bindings))
                 .map_err(|_| CircuitError::SymbolicParameterError)?;
-            return circuit_to_matrix(&assigned, None).map(Cow::Owned);
+            let order: Vec<usize> = circuit
+                .qubits_in_numeric_order()
+                .iter()
+                .map(|q| q.index())
+                .collect();
+            return circuit_to_matrix(&assigned, Some(&order)).map(Cow::Owned);
         }
 
         Err(CircuitError::NoMatrixRepresentation)
@@ -407,6 +412,12 @@ impl UnitaryGate {
     ///
     /// This allows the gate to be defined by its circuit decomposition,
     /// which is useful for inverse operations and optimization.
+    /// The internal qubits are mapped in ascending numeric-ID order to the
+    /// caller's qubits, independently of their storage order in the circuit.
+    /// When no explicit matrix is attached, the first such qubit is the least
+    /// significant bit of the derived matrix. Explicit matrices retain their
+    /// MSB-first argument convention; if both representations are supplied,
+    /// they must describe the same operation under their respective conventions.
     ///
     /// # Arguments
     ///
