@@ -170,10 +170,17 @@ impl PyDensityMatrixNoise {
     /// Computes measurement probabilities with readout error modeling.
     ///
     /// Args:
-    ///     qubits: Indices of qubits to measure
+    ///     qubits: Storage positions on which to apply readout errors. For a
+    ///         circuit-bound state, noise is looked up using the circuit ID at
+    ///         each position; unbound states use identity IDs.
     ///
     /// Returns:
-    ///     A vector of probabilities for all 2^n computational basis states.
+    ///     A vector of probabilities for all 2^num_qubits computational basis
+    ///     states in storage order, independent of the selection order or size.
+    ///     An empty selection applies no readout errors.
+    ///
+    /// Raises:
+    ///     IndexError: A position is out of range, even without a noise model.
     fn probabilities_with_readout(&self, py: Python<'_>, qubits: Vec<usize>) -> PyResult<Vec<f64>> {
         py.detach(|| self.inner.probabilities_with_readout(&qubits))
             .map_err(qis_error_to_py_err)

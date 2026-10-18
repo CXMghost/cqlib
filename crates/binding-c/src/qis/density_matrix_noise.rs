@@ -682,6 +682,10 @@ pub extern "C" fn density_matrix_noise_probabilities_with_readout_len(
 /// Copy the probability distribution including readout errors configured in
 /// the noise model for `qubits` into `buffer`. Returns 0 on success.
 ///
+/// `qubits` contains storage positions. For a circuit-bound state, noise is
+/// looked up using the circuit ID at each position; unbound states use identity
+/// IDs. The full output distribution retains storage order.
+///
 /// `qubits` may be NULL when `qubit_len` is 0, in which case no readout
 /// error is applied and the result matches `density_matrix_noise_probabilities`.
 #[unsafe(no_mangle)]

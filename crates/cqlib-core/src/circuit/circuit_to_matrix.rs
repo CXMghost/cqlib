@@ -198,23 +198,11 @@ pub fn circuit_to_matrix(
                 }
             }
             Instruction::CircuitGate(circuit_gate) => {
-                let symbols = circuit_gate.signature_params();
-                let expected = symbols.len();
-                let actual = params.len();
-                if actual != expected {
-                    return Err(CircuitError::ParameterCountMismatch { expected, actual });
-                }
-                let mut bindings = HashMap::new();
-                for (sym, val) in symbols.iter().zip(params.iter()) {
-                    bindings.insert(sym.as_str(), *val);
-                }
-                let sub_circuit = circuit_gate
-                    .circuit
-                    .circuit
-                    .assign_parameters(&Some(bindings))
-                    .map_err(|_| CircuitError::SymbolicParameterError)?;
-                let sub_matrix = circuit_to_matrix(&sub_circuit, None)?;
-                apply_gate_to_matrix(&mut matrix, &sub_matrix, &bits)?;
+                let gate_matrix = circuit_gate.matrix_for_params(params.as_slice())?;
+                // Gate-local matrices put the first positional argument at MSB;
+                // the full circuit uses an LSB-first basis, as for standard gates.
+                let reversed_bits: SmallVec<[usize; 3]> = bits.iter().copied().rev().collect();
+                apply_gate_to_matrix(&mut matrix, &gate_matrix, &reversed_bits)?;
             }
             Instruction::ClassicalControl(_) => {
                 return Err(CircuitError::InvalidOperation(

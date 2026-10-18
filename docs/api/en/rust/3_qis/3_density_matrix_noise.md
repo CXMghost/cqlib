@@ -87,7 +87,7 @@ Methods:
 The simulator expresses "noise on the quantum state" and "noise on readout" separately: the former acts on the density matrix itself, while the latter only changes the reported probability distribution.
 
 - `fn probabilities(&self) -> Vec<f64>`: return the diagonal entries of the density matrix, that is the measurement probability of each computational basis state. Includes gate noise already applied and excludes readout noise.
-- `fn probabilities_with_readout(&self, qubits: &[usize]) -> Result<Vec<f64>, QisError>`: based on `probabilities`, apply readout noise to the qubits listed in `qubits`.
+- `fn probabilities_with_readout(&self, qubits: &[usize]) -> Result<Vec<f64>, QisError>`: `qubits` contains storage positions on which to apply readout errors. Circuit-bound states look up noise using the circuit ID at each position; unbound states use identity IDs. Returns all `2^num_qubits` probabilities in storage order; an empty selection applies no readout errors. Out-of-range positions return `QisError::IndexOutOfBounds` even without a noise model.
 - `fn probs(&self, measurement: &Measurement) -> Result<HashMap<Outcome, f64>, QisError>`: return the marginal probability distribution selected by `Measurement`, excluding readout noise.
 - `fn probs_with_readout(&self, measurement: &Measurement) -> Result<HashMap<Outcome, f64>, QisError>`: based on `probs`, apply readout noise to `measurement.qubits()`.
 

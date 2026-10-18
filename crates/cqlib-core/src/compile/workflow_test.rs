@@ -1366,6 +1366,81 @@ fn workflow_expands_circuit_gate_definitions_before_optimization() {
 }
 
 #[test]
+fn workflow_preserves_qasm_gate_signatures_in_both_modes() {
+    let declarations = r#"
+        gate reordered(phi, theta) a, b {
+            rx(theta) a;
+            rz(phi) b;
+            cx a, b;
+        }
+        gate declared(unused, phi, theta) a, b {
+            reordered(phi, theta) a, b;
+        }
+    "#;
+    let mut expected = Circuit::new(2);
+    expected.rx(Qubit::new(1), -0.2).unwrap();
+    expected.rz(Qubit::new(0), 0.7).unwrap();
+    expected.cx(Qubit::new(1), Qubit::new(0)).unwrap();
+    let expected_matrix = crate::circuit::circuit_to_matrix(&expected, None).unwrap();
+    let basis = vec![
+        Instruction::Standard(StandardGate::RX),
+        Instruction::Standard(StandardGate::RY),
+        Instruction::Standard(StandardGate::CZ),
+    ];
+    let device = Device::bidirectional_line("declared-signatures", 2)
+        .unwrap()
+        .with_native_gates(basis.clone())
+        .unwrap();
+
+    for call in ["reordered(0.7, -0.2)", "declared(11.0, 0.7, -0.2)"] {
+        let qasm2 = format!(
+            "OPENQASM 2.0; include \"qelib1.inc\"; {declarations} qreg q[2]; {call} q[1], q[0];"
+        );
+        let qasm3 = format!(
+            "OPENQASM 3.0; include \"stdgates.inc\"; {declarations} qubit[2] q; {call} q[1], q[0];"
+        );
+        for circuit in [
+            crate::ir::qasm2_loads(&qasm2).unwrap(),
+            crate::ir::qasm3_loads(&qasm3).unwrap(),
+        ] {
+            for mode in [CompileMode::Normal, CompileMode::Enhanced] {
+                for target in [
+                    CompileTarget::Logical,
+                    CompileTarget::Basis(basis.clone()),
+                    CompileTarget::Device(DeviceCompileTarget {
+                        device: device.clone(),
+                        initial_layout: Some(Layout::from_pairs(&[(0, 0), (1, 1)], 2).unwrap()),
+                        seed: Some(47),
+                    }),
+                ] {
+                    let device_target = matches!(target, CompileTarget::Device(_));
+                    let result = compile(
+                        &circuit,
+                        CompileConfig {
+                            mode,
+                            target,
+                            resource_policy: ResourcePolicy::default(),
+                        },
+                    )
+                    .unwrap();
+
+                    assert!(result.step_changed("decompose.definitions"));
+                    assert!(!contains_high_level_gate(&result.circuit));
+                    crate::circuit::test_utils::assert_matrix_approx_eq(
+                        &crate::circuit::circuit_to_matrix(&result.circuit, None).unwrap(),
+                        &expected_matrix,
+                        1e-9,
+                    );
+                    if device_target {
+                        device.validate_circuit(&result.circuit).unwrap();
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn definition_expansion_invalidates_analysis_before_unitary_decomposition() {
     let q0 = Qubit::new(0);
     let matrix = array![

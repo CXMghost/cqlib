@@ -261,36 +261,26 @@ impl DensityMatrixNoise {
                         let num_controls = mc_gate.num_ctrl_qubits();
                         let base_gate = mc_gate.base_gate();
 
-                        if num_controls == 1 {
-                            let c = qs[0];
-                            let t = qs[1];
-                            match base_gate {
-                                StandardGate::X => sim.apply_cx(c, t)?,
-                                StandardGate::Y => sim.apply_cy(c, t)?,
-                                StandardGate::Z => sim.apply_cz(c, t)?,
-                                StandardGate::RX => sim.apply_crx(c, t, params[0])?,
-                                StandardGate::RY => sim.apply_cry(c, t, params[0])?,
-                                StandardGate::RZ => sim.apply_crz(c, t, params[0])?,
-                                _ => {
-                                    let matrix = mc_gate.matrix(&params).map_err(|_| {
-                                        QisError::CircuitError(
-                                            crate::circuit::CircuitError::NoMatrixRepresentation,
-                                        )
-                                    })?;
-                                    sim.apply_unitary_gate(&qs, &matrix)?;
-                                    sim.apply_noise(*base_gate, &qs)?;
-                                }
+                        match (num_controls, *base_gate) {
+                            (0, StandardGate::GPhase) => {
+                                sim.apply_standard_gate_noise(*base_gate, &qs, &params)?
                             }
-                        } else if num_controls == 2 && *base_gate == StandardGate::X {
-                            sim.apply_ccx(qs[0], qs[1], qs[2])?;
-                        } else {
-                            let matrix = mc_gate.matrix(&params).map_err(|_| {
-                                QisError::CircuitError(
-                                    crate::circuit::CircuitError::NoMatrixRepresentation,
-                                )
-                            })?;
-                            sim.apply_unitary_gate(&qs, &matrix)?;
-                            sim.apply_noise(*base_gate, &qs)?;
+                            (1, StandardGate::X) => sim.apply_cx(qs[0], qs[1])?,
+                            (1, StandardGate::Y) => sim.apply_cy(qs[0], qs[1])?,
+                            (1, StandardGate::Z) => sim.apply_cz(qs[0], qs[1])?,
+                            (1, StandardGate::RX) => sim.apply_crx(qs[0], qs[1], params[0])?,
+                            (1, StandardGate::RY) => sim.apply_cry(qs[0], qs[1], params[0])?,
+                            (1, StandardGate::RZ) => sim.apply_crz(qs[0], qs[1], params[0])?,
+                            (2, StandardGate::X) => sim.apply_ccx(qs[0], qs[1], qs[2])?,
+                            _ => {
+                                let matrix = mc_gate.matrix(&params).map_err(|_| {
+                                    QisError::CircuitError(
+                                        crate::circuit::CircuitError::NoMatrixRepresentation,
+                                    )
+                                })?;
+                                sim.apply_unitary_gate(&qs, &matrix)?;
+                                sim.apply_noise(*base_gate, &qs)?;
+                            }
                         }
                     }
                     Instruction::UnitaryGate(u_gate) => {
@@ -432,25 +422,28 @@ impl DensityMatrixNoise {
             .collect()
     }
 
+    /// Resolves a storage position to its noise-model qubit ID.
+    /// Callers validate positions before looking up noise.
+    fn noise_qubit(&self, position: usize) -> Qubit {
+        self.state
+            .qubit_map
+            .as_ref()
+            .and_then(|map| {
+                map.iter()
+                    .find_map(|(&qubit, &index)| (index == position).then_some(qubit))
+            })
+            .unwrap_or_else(|| Qubit::new(position as u32))
+    }
+
     /// Applies noise channels associated with a gate operation.
     ///
     /// Looks up the noise model for errors associated with `gate` on `qubits`,
     /// converts them to Kraus operators, and applies them to the state.
     /// Supports single-qubit, two-qubit, and three-qubit gates.
     fn apply_noise(&mut self, gate: StandardGate, qubits: &[usize]) -> Result<(), QisError> {
-        let labelled_qubit = |position: usize| {
-            self.state
-                .qubit_map
-                .as_ref()
-                .and_then(|map| {
-                    map.iter()
-                        .find_map(|(&qubit, &index)| (index == position).then_some(qubit))
-                })
-                .unwrap_or_else(|| Qubit::new(position as u32))
-        };
         if let Some(noise_model) = &self.noise_model {
             if qubits.len() == 1 {
-                let q0 = labelled_qubit(qubits[0]);
+                let q0 = self.noise_qubit(qubits[0]);
                 let key = OperationKey::new_single(gate, q0);
                 if let Some(errors) = noise_model.get_single_qubit_errors(&key) {
                     for error in errors {
@@ -460,8 +453,8 @@ impl DensityMatrixNoise {
                     }
                 }
             } else if qubits.len() == 2 {
-                let q0 = labelled_qubit(qubits[0]);
-                let q1 = labelled_qubit(qubits[1]);
+                let q0 = self.noise_qubit(qubits[0]);
+                let q1 = self.noise_qubit(qubits[1]);
                 if let Ok(key) = OperationKey::new_double(gate, q0, q1)
                     && let Some(errors) = noise_model.get_two_qubit_errors(&key)
                 {
@@ -472,9 +465,9 @@ impl DensityMatrixNoise {
                     }
                 }
             } else if qubits.len() == 3 {
-                let q0 = labelled_qubit(qubits[0]);
-                let q1 = labelled_qubit(qubits[1]);
-                let q2 = labelled_qubit(qubits[2]);
+                let q0 = self.noise_qubit(qubits[0]);
+                let q1 = self.noise_qubit(qubits[1]);
+                let q2 = self.noise_qubit(qubits[2]);
                 if let Ok(_key) = OperationKey::new_triple(gate, q0, q1, q2) {
                     // Current noise model struct doesn't have `get_three_qubit_errors`.
                     // Ready for future extension without silently failing or panicking.
@@ -1042,12 +1035,21 @@ impl DensityMatrixNoise {
     ///
     /// # Arguments
     ///
-    /// * `qubits` - Indices of qubits to measure.
+    /// * `qubits` - Storage positions on which to apply readout errors, not circuit
+    ///   qubit IDs. For a circuit-bound state, each position selects the noise
+    ///   configured for `circuit.qubits()[position]`. Unbound states use identity IDs.
     ///
     /// # Returns
     ///
     /// A vector of probabilities for all 2^n computational basis states, where n
-    /// is the total number of qubits in the simulator.
+    /// is the total number of qubits in the simulator. The array retains storage
+    /// order regardless of the order or number of selected positions. An empty
+    /// selection returns the probabilities before readout noise.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QisError::IndexOutOfBounds`] for a position outside `0..num_qubits`,
+    /// including when no noise model is configured.
     ///
     /// # Examples
     ///
@@ -1063,10 +1065,20 @@ impl DensityMatrixNoise {
     /// // For Bell state |Φ+⟩, P(|00⟩) ≈ 0.5 and P(|11⟩) ≈ 0.5
     /// ```
     pub fn probabilities_with_readout(&self, qubits: &[usize]) -> Result<Vec<f64>, QisError> {
+        for &position in qubits {
+            if position >= self.state.num_qubits {
+                return Err(QisError::IndexOutOfBounds {
+                    index: position,
+                    max: self.state.num_qubits.saturating_sub(1),
+                });
+            }
+        }
         let mut probs = self.probabilities();
         self.apply_readout_noise(
             &mut probs,
-            qubits.iter().map(|&q| (Qubit::new(q as u32), q)),
+            qubits
+                .iter()
+                .map(|&position| (self.noise_qubit(position), position)),
         )?;
         Ok(probs)
     }

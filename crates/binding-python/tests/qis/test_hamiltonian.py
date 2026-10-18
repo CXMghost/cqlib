@@ -12,8 +12,111 @@
 
 import pytest
 import math
+import warnings
 import numpy as np
 from cqlib.qis import Hamiltonian, PauliString, Phase, TrotterMode
+
+
+@pytest.fixture(params=["from_list", "add_term", "scale"])
+def hamiltonian_with_coefficient(request):
+    def make(pauli, coefficient):
+        if request.param == "from_list":
+            return Hamiltonian.from_list([(pauli, coefficient)])
+        if request.param == "add_term":
+            h = Hamiltonian(1)
+            assert h.add_term(pauli, coefficient) is None
+        else:
+            h = Hamiltonian.from_pauli(pauli)
+            assert h.scale(coefficient) is None
+        return h
+
+    return make
+
+
+@pytest.mark.parametrize("scalar_type", [complex, np.complex128, np.complex64])
+@pytest.mark.parametrize(
+    "label, coefficient", [("iX", -1j), ("X", 1.25 - 2.5j), ("X", 2 + 0j)]
+)
+def test_hamiltonian_complex_scalar_coefficients(
+    hamiltonian_with_coefficient, scalar_type, label, coefficient
+):
+    # In particular, (-i) * (iX) must be X rather than the zero operator.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        h = hamiltonian_with_coefficient(
+            PauliString.from_str(label), scalar_type(coefficient)
+        )
+    assert h.terms[0][1] == coefficient
+    assert not caught
+    phase = 1j if label == "iX" else 1
+    expected = np.array([[0, coefficient * phase], [coefficient * phase, 0]])
+    np.testing.assert_array_equal(h.to_matrix(), expected)
+
+
+@pytest.mark.parametrize(
+    "coefficient, expected",
+    [
+        (2, 2),
+        (2.5, 2.5),
+        (np.int64(2), 2),
+        (np.float32(2.5), 2.5),
+        (np.float64(2.5), 2.5),
+        ((1.25, -2.5), 1.25 - 2.5j),
+        ((np.float32(1.25), np.float64(-2.5)), 1.25 - 2.5j),
+    ],
+)
+def test_hamiltonian_real_and_tuple_coefficients(
+    hamiltonian_with_coefficient, coefficient, expected
+):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        h = hamiltonian_with_coefficient(PauliString.from_str("X"), coefficient)
+    assert h.terms[0][1] == expected
+    np.testing.assert_array_equal(h.to_matrix(), [[0, expected], [expected, 0]])
+
+
+@pytest.mark.parametrize("coefficient", ["1+2j", object(), (), (1,), (1, 2, 3)])
+def test_hamiltonian_rejects_invalid_coefficient(
+    hamiltonian_with_coefficient, coefficient
+):
+    with pytest.raises(ValueError, match="Coefficient must be"):
+        hamiltonian_with_coefficient(PauliString.from_str("X"), coefficient)
+
+
+class _BrokenComplexCoefficient:
+    def __complex__(self):
+        raise RuntimeError("complex conversion failed")
+
+    def __float__(self):
+        return 0.0  # A failed complex conversion must not fall back to this.
+
+
+def test_hamiltonian_propagates_complex_conversion_error(hamiltonian_with_coefficient):
+    with pytest.raises(RuntimeError, match="complex conversion failed"):
+        hamiltonian_with_coefficient(
+            PauliString.from_str("X"), _BrokenComplexCoefficient()
+        )
+
+
+@pytest.mark.parametrize("method", ["add_term", "scale"])
+@pytest.mark.parametrize(
+    "coefficient, error",
+    [
+        (object(), ValueError),
+        (("invalid", 1), TypeError),
+        (_BrokenComplexCoefficient(), RuntimeError),
+    ],
+)
+def test_hamiltonian_coefficient_error_preserves_state(method, coefficient, error):
+    h = Hamiltonian.from_list([(PauliString.from_str("Z"), 2)])
+    before = h.copy()
+    with pytest.raises(error):
+        if method == "add_term":
+            h.add_term(PauliString.from_str("X"), coefficient)
+        else:
+            h.scale(coefficient)
+    assert h == before
+    np.testing.assert_array_equal(h.to_matrix(), [[2, 0], [0, -2]])
 
 
 def test_checked_sparse_algebra_and_legacy_compatibility():

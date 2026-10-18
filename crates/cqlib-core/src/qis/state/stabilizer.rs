@@ -1662,20 +1662,16 @@ impl StabilizerState {
                 Instruction::Standard(gate) => {
                     state.apply_clifford_gate(*gate, &qubit_indices, &params)?;
                 }
-                Instruction::McGate(mc) if mc.num_ctrl_qubits() == 1 => {
-                    let ctrl = qubit_indices[0];
-                    let tgt = qubit_indices[1];
-                    match mc.base_gate() {
-                        StandardGate::X => state.apply_cx(ctrl, tgt)?,
-                        StandardGate::Y => state.apply_cy(ctrl, tgt)?,
-                        StandardGate::Z => state.apply_cz(ctrl, tgt)?,
-                        g => {
-                            return Err(QisError::UnsupportedOperation(format!(
-                                "Controlled-{g} is not a Clifford gate"
-                            )));
-                        }
+                Instruction::McGate(mc) if mc.num_ctrl_qubits() == 1 => match mc.base_gate() {
+                    StandardGate::X => state.apply_cx(qubit_indices[0], qubit_indices[1])?,
+                    StandardGate::Y => state.apply_cy(qubit_indices[0], qubit_indices[1])?,
+                    StandardGate::Z => state.apply_cz(qubit_indices[0], qubit_indices[1])?,
+                    g => {
+                        return Err(QisError::UnsupportedOperation(format!(
+                            "Controlled-{g} is not supported in stabilizer simulation"
+                        )));
                     }
-                }
+                },
                 Instruction::McGate(mc) => {
                     return Err(QisError::UnsupportedOperation(format!(
                         "{}-controlled gates are not supported in stabilizer simulation",

@@ -250,7 +250,7 @@ Takes the ideal probability distribution and applies the readout errors register
 - `ptr` (`const CDensityMatrixNoise*`): noisy-simulator handle.
 - `buffer` (`double*`): output buffer.
 - `len` (`uintptr_t`): buffer length; must equal `density_matrix_noise_probabilities_with_readout_len`.
-- `qubits` (`const uint32_t*`): array of qubits to apply readout errors to; may be NULL when `qubit_len` is 0, in which case the result matches `density_matrix_noise_probabilities`.
+- `qubits` (`const uint32_t*`): storage positions on which to apply readout errors. Circuit-bound states look up noise using the circuit ID at each position; unbound states use identity IDs. The full output distribution retains storage order. May be NULL when `qubit_len` is 0, in which case the result matches `density_matrix_noise_probabilities`.
 - `qubit_len` (`uintptr_t`): number of qubits.
 
 Returns: `0` on success; `-1` NULL pointers; `-2` out-of-bounds qubit; `-8` when `len` does not match the actual count.

@@ -596,7 +596,7 @@ fn dump_unitary_gate_definition(
     // Body context
     let mut body_qubit_map = HashMap::new();
     let inner_circuit = &frozen_circuit.circuit;
-    for (i, q) in inner_circuit.qubits().iter().enumerate() {
+    for (i, q) in frozen_circuit.qubits_in_numeric_order().iter().enumerate() {
         body_qubit_map.insert(*q, format!("q{}", i));
     }
 

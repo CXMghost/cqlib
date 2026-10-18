@@ -76,22 +76,19 @@ impl fmt::Display for PyHamiltonian {
 /// - complex -> complex number
 /// - tuple (real, imag) -> complex number
 fn extract_complex(value: &Bound<'_, PyAny>) -> PyResult<Complex64> {
-    // Try to extract as float first
-    if let Ok(val) = value.extract::<f64>() {
-        return Ok(Complex64::new(val, 0.0));
-    }
-    // Try to extract as Python complex
-    if let Ok(py_complex) = value.cast::<PyComplex>() {
-        return Ok(Complex64::new(py_complex.real(), py_complex.imag()));
-    }
-
-    // Try to extract as tuple (real, imag)
     if let Ok(tuple) = value.cast::<PyTuple>()
         && tuple.len() == 2
     {
         let real: f64 = tuple.get_item(0)?.extract()?;
         let imag: f64 = tuple.get_item(1)?.extract()?;
         return Ok(Complex64::new(real, imag));
+    }
+
+    // Use the complex protocol before real conversion: NumPy complex scalars
+    // permit float extraction, but discard the imaginary part with a warning.
+    // Propagate conversion errors instead of falling back to a lossy float cast.
+    if let Some(coefficient) = super::fermion::scalar_operand(value)? {
+        return Ok(coefficient);
     }
 
     Err(PyValueError::new_err(

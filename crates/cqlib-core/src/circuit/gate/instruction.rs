@@ -26,7 +26,7 @@ use crate::circuit::gate::circuit_gate::{CircuitGate, FrozenCircuit};
 use crate::circuit::gate::directive::Directive;
 use crate::circuit::gate::standard_gate::StandardGate;
 use crate::circuit::gate::{ClassicalDataOp, MCGate, UnitaryGate, gate_matrix};
-use crate::circuit::{ClassicalControlOp, ClassicalValue, Parameter, circuit_to_matrix};
+use crate::circuit::{ClassicalControlOp, ClassicalValue, Parameter};
 use alloc::borrow::Cow;
 use ndarray::Array2;
 use num_complex::Complex64;
@@ -318,23 +318,26 @@ impl Instruction {
 
     /// Computes the unitary matrix representation of the instruction.
     ///
+    /// The first qubit argument is the most-significant bit of the local
+    /// matrix for every supported gate, including circuit-backed UnitaryGate
+    /// definitions. Full circuit matrices instead use an LSB-first basis.
+    ///
     /// # Arguments
     ///
     /// * `params` - A slice of floating-point parameters (e.g., rotation angles).
+    ///   CircuitGate values bind positionally to its declared signature.
     ///
     /// # Returns
     ///
-    /// - `Some(Cow<Array2>)`: The unitary matrix for `Standard` and `Extended` gates.
-    /// - `None`: If the instruction is non-unitary (e.g., `Measure`, `Barrier`, `Reset`,
-    ///   or classical control).
+    /// - `Some(Cow<Array2>)`: A numeric matrix for a supported gate instruction.
+    /// - `None`: If parameters are invalid or unresolved, or the instruction has
+    ///   no matrix (e.g., `Measure`, `Barrier`, `Reset`, or classical control).
     pub fn matrix(&self, params: &[f64]) -> Option<Cow<'_, Array2<Complex64>>> {
         match self {
             Instruction::Standard(g) => g.matrix(params).ok(),
             Instruction::McGate(g) => g.matrix(params).ok(),
-            Instruction::UnitaryGate(g) => g.matrix_for_params(params).ok(),
-            Instruction::CircuitGate(g) => circuit_to_matrix(&g.circuit.circuit, None)
-                .ok()
-                .map(Cow::Owned),
+            Instruction::UnitaryGate(g) => g.matrix_for_params_in_gate_order(params).ok(),
+            Instruction::CircuitGate(g) => g.matrix_for_params(params).ok().map(Cow::Owned),
             Instruction::Directive(_) => None,
             Instruction::ClassicalData(_) => None,
             Instruction::Delay => None,
