@@ -1208,6 +1208,146 @@ fn test_native_gates_amplitude_damping() {
 }
 
 #[test]
+fn test_readout_uses_circuit_ids_at_selected_storage_positions() {
+    use crate::device::Outcome;
+
+    for ids in [[0, 1, 2], [2, 0, 1], [2, 5, 9], [9, 2, 5]] {
+        for basis in 0..8 {
+            for (noise_position, &noise_id) in ids.iter().enumerate() {
+                let mut circuit =
+                    Circuit::from_qubits(ids.iter().copied().map(Qubit::new).collect()).unwrap();
+                for (position, &id) in ids.iter().enumerate() {
+                    if basis & (1 << position) != 0 {
+                        circuit.x(Qubit::new(id)).unwrap();
+                    }
+                }
+                let receipt = circuit.measure(Qubit::new(noise_id)).unwrap();
+                let mut model = NoiseModel::new();
+                model
+                    .add_readout_error(
+                        Qubit::new(noise_id),
+                        ReadoutError {
+                            p_0_given_1: 0.2,
+                            p_1_given_0: 0.7,
+                        },
+                    )
+                    .unwrap();
+                let sim = DensityMatrixNoise::from_circuit(&circuit, Some(model)).unwrap();
+                let original = sim.state.data().to_vec();
+                let bit = (basis >> noise_position) & 1;
+                let flip_probability = if bit == 0 { 0.7 } else { 0.2 };
+
+                for selection in 0..8 {
+                    let positions: Vec<_> = (0..3)
+                        .rev()
+                        .filter(|&position| selection & (1 << position) != 0)
+                        .collect();
+                    let mut expected = [0.0; 8];
+                    expected[basis] = 1.0;
+                    if selection & (1 << noise_position) != 0 {
+                        expected[basis] = 1.0 - flip_probability;
+                        expected[basis ^ (1 << noise_position)] = flip_probability;
+                    }
+                    let actual = sim.probabilities_with_readout(&positions).unwrap();
+                    assert_eq!(actual.len(), expected.len());
+                    for (actual, expected) in actual.iter().zip(&expected) {
+                        assert!(
+                            (actual - expected).abs() < 1e-12,
+                            "IDs={ids:?}, basis={basis}, noise_position={noise_position}, positions={positions:?}: {actual} != {expected}"
+                        );
+                    }
+                }
+
+                let marginal = sim.probs_with_readout(&receipt).unwrap();
+                let p_one = if bit == 0 { 0.7 } else { 0.8 };
+                assert!((marginal[&Outcome::from_bitstring("1").unwrap()] - p_one).abs() < 1e-12);
+                assert_eq!(sim.state.data(), original.as_slice());
+            }
+        }
+    }
+}
+
+#[test]
+fn test_readout_combines_mapped_errors_without_reordering_full_probabilities() {
+    use crate::device::Outcome;
+
+    let mut circuit =
+        Circuit::from_qubits(vec![Qubit::new(9), Qubit::new(2), Qubit::new(5)]).unwrap();
+    circuit.x(Qubit::new(9)).unwrap();
+    let receipt = circuit
+        .measure_bits([Qubit::new(2), Qubit::new(9)])
+        .unwrap();
+    let mut model = NoiseModel::new();
+    for (id, p_0_given_1, p_1_given_0) in [(9, 0.1, 0.2), (2, 0.3, 0.4)] {
+        model
+            .add_readout_error(
+                Qubit::new(id),
+                ReadoutError {
+                    p_0_given_1,
+                    p_1_given_0,
+                },
+            )
+            .unwrap();
+    }
+    let sim = DensityMatrixNoise::from_circuit(&circuit, Some(model)).unwrap();
+    let expected = [0.06, 0.54, 0.04, 0.36, 0.0, 0.0, 0.0, 0.0];
+    for positions in [&[0, 1][..], &[1, 0], &[2, 1, 0]] {
+        let actual = sim.probabilities_with_readout(positions).unwrap();
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-12);
+        }
+    }
+    let marginal = sim.probs_with_readout(&receipt).unwrap();
+    for (bits, probability) in [("00", 0.06), ("10", 0.54), ("01", 0.04), ("11", 0.36)] {
+        assert!((marginal[&Outcome::from_bitstring(bits).unwrap()] - probability).abs() < 1e-12);
+    }
+    assert_eq!(
+        sim.probabilities(),
+        vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    );
+}
+
+#[test]
+fn test_readout_validates_positions_independently_of_noise_model() {
+    let mut model = NoiseModel::new();
+    model
+        .add_readout_error(
+            Qubit::new(9),
+            ReadoutError {
+                p_0_given_1: 0.0,
+                p_1_given_0: 1.0,
+            },
+        )
+        .unwrap();
+    for noise_model in [None, Some(NoiseModel::new()), Some(model)] {
+        for bound in [false, true] {
+            let mut sim = DensityMatrixNoise::new(2, noise_model.clone());
+            if bound {
+                let circuit = Circuit::from_qubits(vec![Qubit::new(9), Qubit::new(2)]).unwrap();
+                sim.apply_circuit(&circuit).unwrap();
+            }
+            for index in [2, 9, usize::MAX] {
+                assert!(matches!(
+                    sim.probabilities_with_readout(&[0, index]),
+                    Err(QisError::IndexOutOfBounds { index: actual, max: 1 }) if actual == index
+                ));
+            }
+            assert_eq!(
+                sim.probabilities_with_readout(&[]).unwrap(),
+                sim.probabilities()
+            );
+        }
+        let sim = DensityMatrixNoise::new(0, noise_model);
+        assert_eq!(sim.probabilities_with_readout(&[]).unwrap(), vec![1.0]);
+        assert!(matches!(
+            sim.probabilities_with_readout(&[0]),
+            Err(QisError::IndexOutOfBounds { index: 0, max: 0 })
+        ));
+    }
+}
+
+#[test]
 fn test_apply_readout_noise_out_of_bounds() {
     let mut sim = DensityMatrixNoise::new(2, Some(NoiseModel::new()));
     sim.apply_h(0).unwrap();

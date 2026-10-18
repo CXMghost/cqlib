@@ -87,7 +87,7 @@ pub struct DensityMatrixNoise {
 模拟器把「量子态的噪声」与「读出的噪声」分开表达：前者作用于密度矩阵本身，后者只改变报告出来的概率分布。
 
 - `fn probabilities(&self) -> Vec<f64>`：返回密度矩阵对角元，即各计算基态的测量概率。包含已经施加的门噪声，不含读出噪声。
-- `fn probabilities_with_readout(&self, qubits: &[usize]) -> Result<Vec<f64>, QisError>`：在 `probabilities` 的基础上，对 `qubits` 中列出的比特施加读出噪声。
+- `fn probabilities_with_readout(&self, qubits: &[usize]) -> Result<Vec<f64>, QisError>`：`qubits` 为施加读出误差的存储位置；绑定线路后，按这些位置对应的线路比特 ID 查询噪声模型，未绑定时 ID 与位置相同。返回完整的 `2^num_qubits` 项概率数组，保持存储位序；空选择不施加读出误差。位置越界时返回 `QisError::IndexOutOfBounds`，即使未配置噪声模型。
 - `fn probs(&self, measurement: &Measurement) -> Result<HashMap<Outcome, f64>, QisError>`：返回 `Measurement` 选定的边缘概率分布，不含读出噪声。
 - `fn probs_with_readout(&self, measurement: &Measurement) -> Result<HashMap<Outcome, f64>, QisError>`：在 `probs` 的基础上，对 `measurement.qubits()` 施加读出噪声。
 
