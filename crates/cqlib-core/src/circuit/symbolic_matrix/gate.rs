@@ -427,7 +427,9 @@ pub fn circuit_to_symbolic_matrix(
                     flush_numeric_run(&mut matrix, &mut numeric_run, &full_bits)?;
                     let matrix = matrix.get_or_insert_with(|| symbolic_eye(dim));
                     let base = standard_gate_symbolic_matrix(*mc_gate.base_gate(), &params)?;
-                    let gate_matrix = control_matrix(&base, mc_gate.num_ctrl_qubits());
+                    // The base matrix already includes any inherent controls.
+                    let added_controls = mc_gate.num_qubits() - mc_gate.base_gate().num_qubits();
+                    let gate_matrix = control_matrix(&base, added_controls);
                     apply_gate_to_matrix(matrix, &gate_matrix, &reversed_bits)?;
                 }
             }

@@ -11,7 +11,7 @@
 // that they have been altered from the originals.
 
 use super::*;
-use crate::circuit::gate::{FrozenCircuit, UnitaryGate};
+use crate::circuit::gate::{FrozenCircuit, MCGate, UnitaryGate};
 use crate::circuit::symbolic_matrix::gate::{
     apply_gate_to_matrix, apply_standard_gate_to_matrix, circuit_to_symbolic_matrix,
     standard_gate_symbolic_matrix,
@@ -1480,6 +1480,82 @@ fn test_mcgate_parametric_symbolic_matrix_matches_numeric() {
     let expected = circuit_to_matrix(&bound, None).unwrap();
 
     assert_matrix_approx_eq(&evaluated, &expected, 1e-10);
+}
+
+#[test]
+fn test_mcgate_zero_added_controls_preserves_symbolic_controlled_rotations() {
+    for gate in [StandardGate::CRX, StandardGate::CRY, StandardGate::CRZ] {
+        let mut circuit = Circuit::new(2);
+        circuit
+            .append(
+                Instruction::McGate(Box::new(MCGate::new(0, gate))),
+                [Qubit::new(0), Qubit::new(1)],
+                [ParameterValue::from(Parameter::symbol("theta"))],
+                None,
+            )
+            .unwrap();
+        let symbolic = circuit_to_symbolic_matrix(&circuit, Some(&[1, 0])).unwrap();
+        assert_eq!(symbolic.dim(), (4, 4));
+        for theta in [0.0, 0.37, -0.51, PI] {
+            let bindings = HashMap::from([("theta", theta)]);
+            let actual = evaluate_symbolic_matrix(&symbolic, &Some(bindings)).unwrap();
+            let expected = gate.matrix(&[theta]).unwrap();
+            assert_matrix_approx_eq(&actual, expected.as_ref(), 1e-12);
+        }
+    }
+}
+
+#[test]
+fn test_mcgate_inherent_controls_symbolic_matrix_matches_bound_numeric() {
+    for gate in [StandardGate::CRX, StandardGate::CRY, StandardGate::CRZ] {
+        for added_controls in 0..=2 {
+            let mc_gate = MCGate::new(added_controls, gate);
+            assert_eq!(mc_gate.num_ctrl_qubits(), added_controls as usize + 1);
+            let num_qubits = mc_gate.num_qubits() + 1;
+            let qubit_ids = [9usize, 2, 17, 5, 30][..num_qubits].to_vec();
+            let qubits: Vec<Qubit> = qubit_ids.iter().map(|&id| Qubit::new(id as u32)).collect();
+            // Leave a spectator between gate operands in the circuit's stored order.
+            let operands: Vec<Qubit> = qubits
+                .iter()
+                .enumerate()
+                .filter_map(|(index, &qubit)| (index != 1).then_some(qubit))
+                .collect();
+            for reverse in [false, true] {
+                let mut operands = operands.clone();
+                if reverse {
+                    operands.reverse();
+                }
+                let mut circuit = Circuit::from_qubits(qubits.clone()).unwrap();
+                circuit.h(operands[0]).unwrap();
+                circuit.x(qubits[1]).unwrap();
+                circuit
+                    .append(
+                        Instruction::McGate(Box::new(mc_gate.clone())),
+                        operands.clone(),
+                        [ParameterValue::from(Parameter::symbol("theta"))],
+                        None,
+                    )
+                    .unwrap();
+                circuit.rz(*operands.last().unwrap(), 0.23).unwrap();
+                for order in [None, Some(qubit_ids.as_slice())] {
+                    let symbolic = circuit_to_symbolic_matrix(&circuit, order).unwrap();
+                    let dim = 1 << num_qubits;
+                    assert_eq!(symbolic.dim(), (dim, dim));
+                    for theta in [0.0, 0.37, -0.51, PI] {
+                        let bindings = HashMap::from([("theta", theta)]);
+                        let actual =
+                            evaluate_symbolic_matrix(&symbolic, &Some(bindings.clone())).unwrap();
+                        let bound = circuit.assign_parameters(&Some(bindings)).unwrap();
+                        let expected = circuit_to_matrix(&bound, order).unwrap();
+                        assert_matrix_approx_eq(&actual, &expected, 1e-12);
+                        let constant_symbolic = circuit_to_symbolic_matrix(&bound, order).unwrap();
+                        let constant = evaluate_symbolic_matrix(&constant_symbolic, &None).unwrap();
+                        assert_matrix_approx_eq(&constant, &expected, 1e-12);
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]
