@@ -731,6 +731,167 @@ mod tests {
         }
     }
 
+    #[test]
+    fn weyl_boundary_unitary_gate_decomposition_preserves_phase_and_device_constraints() {
+        use crate::compile::test_utils::{build_device_synthesis_context, kak_boundary_matrix};
+        use crate::compile::transform::decompose::unitary::DeviceSynthesisPlacement;
+        use crate::device::Device;
+
+        let gate = UnitaryGate::new("boundary", 2, 0)
+            .with_matrix(kak_boundary_matrix())
+            .unwrap();
+        let mut source = Circuit::new(2);
+        source
+            .unitary(gate.clone(), vec![Qubit::new(1), Qubit::new(0)])
+            .unwrap();
+        source
+            .unitary(gate, vec![Qubit::new(1), Qubit::new(0)])
+            .unwrap();
+        source.set_global_phase(Parameter::from(0.37));
+        let expected = circuit_to_matrix(&source, None).unwrap();
+
+        for gate in [
+            StandardGate::CX,
+            StandardGate::CY,
+            StandardGate::CZ,
+            StandardGate::RZZ,
+        ] {
+            let config = config_for_native_2q(gate);
+            let (generic, stats) =
+                decompose_unitaries_with_rule_stats(&source, config.clone()).unwrap();
+            assert_eq!(stats.hits, 1);
+            assert_eq!(stats.misses, 1);
+            assert_abs_diff_eq!(
+                expected,
+                circuit_to_matrix(&generic.circuit, None).unwrap(),
+                epsilon = 1e-9
+            );
+
+            let device = Device::bidirectional_line("boundary", 2)
+                .unwrap()
+                .with_native_gates(
+                    config
+                        .two_qubit_target
+                        .native_1q()
+                        .iter()
+                        .copied()
+                        .chain([gate])
+                        .map(Instruction::Standard)
+                        .collect(),
+                )
+                .unwrap();
+            // Matrix-backed gates are synthesized before physical routing.
+            let context = build_device_synthesis_context(
+                &device,
+                &source,
+                DeviceSynthesisPlacement::PreLayoutEnvelope,
+            )
+            .unwrap();
+            let result = DecomposeUnitaries::new_device_aware(config.clone(), context)
+                .transform_resolved(&source, None)
+                .unwrap_or_else(|error| panic!("gate={gate:?}: {error}"));
+            assert!(result.changed);
+            assert!(
+                result
+                    .circuit
+                    .operations()
+                    .iter()
+                    .all(|op| match op.instruction {
+                        Instruction::Standard(g) => g.num_qubits() == 1 || g == gate,
+                        _ => false,
+                    })
+            );
+            assert_abs_diff_eq!(
+                expected,
+                circuit_to_matrix(&result.circuit, None).unwrap(),
+                epsilon = 1e-9
+            );
+        }
+    }
+
+    #[test]
+    fn weyl_boundary_does_not_bypass_unsupported_device_interactions() {
+        use crate::compile::test_utils::{build_device_synthesis_context, kak_boundary_matrix};
+        use crate::compile::transform::decompose::unitary::DeviceSynthesisPlacement;
+        use crate::device::Device;
+        let mut source = Circuit::new(2);
+        source
+            .unitary(
+                UnitaryGate::new("boundary", 2, 0)
+                    .with_matrix(kak_boundary_matrix())
+                    .unwrap(),
+                vec![Qubit::new(0), Qubit::new(1)],
+            )
+            .unwrap();
+        let device = Device::bidirectional_line("no-entangler", 2)
+            .unwrap()
+            .with_native_gates(vec![Instruction::Standard(StandardGate::U)])
+            .unwrap();
+        let context = build_device_synthesis_context(
+            &device,
+            &source,
+            DeviceSynthesisPlacement::PreLayoutEnvelope,
+        )
+        .unwrap();
+        let error = DecomposeUnitaries::new_device_aware(Default::default(), context)
+            .transform_resolved(&source, None)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("no exact device-aware two-qubit synthesis candidate")
+        );
+    }
+
+    #[test]
+    fn weyl_boundary_phase_stays_inside_classical_control_body() {
+        use crate::compile::test_utils::kak_boundary_matrix;
+        let gate = UnitaryGate::new("boundary", 2, 0)
+            .with_matrix(kak_boundary_matrix())
+            .unwrap();
+        let mut expected_body = Circuit::new(2);
+        expected_body
+            .unitary(gate.clone(), vec![Qubit::new(0), Qubit::new(1)])
+            .unwrap();
+        let mut source = Circuit::new(2);
+        source
+            .if_else(
+                ClassicalExpr::bool_literal(true),
+                |body| {
+                    body.append(
+                        Instruction::UnitaryGate(Box::new(gate)),
+                        [Qubit::new(0), Qubit::new(1)],
+                        [],
+                        None,
+                    )
+                },
+                |_| Ok(()),
+            )
+            .unwrap();
+        let output = decompose_unitaries(&source, Default::default()).unwrap();
+        assert!(output.global_phase().is_zero());
+        let Instruction::ClassicalControl(ClassicalControlOp::If(control)) =
+            &output.operations()[0].instruction
+        else {
+            panic!("expected if body")
+        };
+        let mut body = Circuit::new(2);
+        for op in control.then_body().operations() {
+            let params = op
+                .params
+                .iter()
+                .map(|param| output.parameter_value(param).unwrap())
+                .collect::<Vec<_>>();
+            body.append(op.instruction.clone(), op.qubits.clone(), params, None)
+                .unwrap();
+        }
+        assert_abs_diff_eq!(
+            circuit_to_matrix(&body, None).unwrap(),
+            circuit_to_matrix(&expected_body, None).unwrap(),
+            epsilon = 1e-9
+        );
+    }
+
     fn operation_parameter(circuit: &Circuit, operation: &Operation, position: usize) -> Parameter {
         match operation.params.get(position) {
             Some(CircuitParam::Fixed(value)) => Parameter::from(*value),

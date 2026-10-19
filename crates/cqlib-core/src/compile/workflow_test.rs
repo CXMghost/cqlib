@@ -55,6 +55,61 @@ fn compile_config(mode: CompileMode) -> CompileConfig {
 }
 
 #[test]
+fn weyl_boundary_workflow_preserves_phase_for_logical_basis_and_device_targets() {
+    use crate::circuit::{circuit_to_matrix, test_utils::assert_matrix_approx_eq};
+    use crate::compile::test_utils::kak_boundary_matrix;
+    let mut circuit = Circuit::new(2);
+    circuit
+        .unitary(
+            UnitaryGate::new("boundary", 2, 0)
+                .with_matrix(kak_boundary_matrix())
+                .unwrap(),
+            vec![Qubit::new(1), Qubit::new(0)],
+        )
+        .unwrap();
+    circuit.set_global_phase(Parameter::from(-0.41));
+    let expected = circuit_to_matrix(&circuit, None).unwrap();
+    let native = vec![
+        Instruction::Standard(StandardGate::U),
+        Instruction::Standard(StandardGate::CX),
+    ];
+    let device = Device::bidirectional_line("boundary", 2)
+        .unwrap()
+        .with_native_gates(native.clone())
+        .unwrap();
+    for mode in [CompileMode::Normal, CompileMode::Enhanced] {
+        for target in [
+            CompileTarget::Logical,
+            CompileTarget::Basis(native.clone()),
+            CompileTarget::Device(DeviceCompileTarget {
+                device: device.clone(),
+                initial_layout: Some(Layout::from_pairs(&[(0, 0), (1, 1)], 2).unwrap()),
+                seed: Some(41),
+            }),
+        ] {
+            let is_device = matches!(&target, CompileTarget::Device(_));
+            let result = compile(
+                &circuit,
+                CompileConfig {
+                    target,
+                    ..compile_config(mode)
+                },
+            )
+            .unwrap();
+            assert!(result.step_changed("decompose.unitary"));
+            assert_matrix_approx_eq(
+                &circuit_to_matrix(&result.circuit, None).unwrap(),
+                &expected,
+                1e-9,
+            );
+            if is_device {
+                device.validate_circuit(&result.circuit).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
 fn xy_basis_compiles_generic_u_to_three_rotations_in_both_modes() {
     let mut circuit = Circuit::new(1);
     circuit.u(Qubit::new(0), 0.37, 0.23, 0.29).unwrap();
