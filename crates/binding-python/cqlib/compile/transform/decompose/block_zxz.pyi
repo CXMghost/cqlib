@@ -19,7 +19,6 @@ from numpy.typing import ArrayLike, NDArray
 
 from cqlib.circuit import Circuit
 
-
 class BlockZxzDecomposeOptions:
     """Optimization switches of the paper's Section 5 reductions.
 
@@ -40,14 +39,12 @@ class BlockZxzDecomposeOptions:
         opt_a2: bool = True,
         opt_a2_force: bool = False,
     ) -> None: ...
-
     @property
     def opt_a1(self) -> bool: ...
     @property
     def opt_a2(self) -> bool: ...
     @property
     def opt_a2_force(self) -> bool: ...
-
     @staticmethod
     def none() -> BlockZxzDecomposeOptions:
         """Options with every optimization disabled (unoptimized pipeline)."""
@@ -56,7 +53,6 @@ class BlockZxzDecomposeOptions:
     def __copy__(self) -> BlockZxzDecomposeOptions: ...
     def __deepcopy__(self, memo: dict[int, object]) -> BlockZxzDecomposeOptions: ...
     def __eq__(self, other: object) -> bool: ...
-
 
 def decompose_block_zxz(matrix: ArrayLike, atol: float = 1e-10) -> Circuit:
     """Decompose a general n-qubit unitary into single-qubit rotations and
@@ -78,7 +74,6 @@ def decompose_block_zxz(matrix: ArrayLike, atol: float = 1e-10) -> Circuit:
             decomposition invariant fails.
     """
     ...
-
 
 def decompose_block_zxz_with_options(
     matrix: ArrayLike,
@@ -107,7 +102,6 @@ def decompose_block_zxz_with_options(
     """
     ...
 
-
 def block_zxz_step1(
     matrix: ArrayLike, atol: float = 1e-10
 ) -> tuple[
@@ -123,7 +117,6 @@ def block_zxz_step1(
             qubits.
     """
     ...
-
 
 def block_zxz_demux_pair(
     u0: ArrayLike, u1: ArrayLike, atol: float = 1e-10
@@ -143,7 +136,6 @@ def block_zxz_demux_pair(
     """
     ...
 
-
 def block_zxz_step3_ucrz_to_circuit(
     d_matrix: ArrayLike, atol: float = 1e-10
 ) -> Circuit:
@@ -155,16 +147,13 @@ def block_zxz_step3_ucrz_to_circuit(
     """
     ...
 
-
 def block_zxz_is_block_diagonal(matrix: ArrayLike, atol: float = 1e-10) -> bool:
     """Return whether ``matrix`` is block-diagonal (controlled-gate shape)."""
     ...
 
-
 def block_zxz_cx_count(circuit: Circuit) -> int:
     """Count the CX gates of ``circuit`` (nested composite blocks included)."""
     ...
-
 
 __all__ = [
     "BlockZxzDecomposeOptions",
